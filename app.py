@@ -229,7 +229,7 @@ st.markdown(f"""
 <div class="korcz-header">
   {get_logo_html()}
   <div class="korcz-logo-text">
-    <div class="brand">KORCZ</div>
+    <div class="brand">SPK KORCZ</div>
     <div class="sub">Skaner DDU / Przegląd P3</div>
   </div>
 </div>
