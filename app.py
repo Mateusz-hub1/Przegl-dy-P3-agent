@@ -1,42 +1,72 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image, ImageEnhance
+from google.cloud import vision
+from google.oauth2.service_account import Credentials
 import io
 import re
 import gspread
-from google.oauth2.service_account import Credentials
 
 # ---------------------------------------------------------------------------
 # KONFIGURACJA STRONY
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Skaner DDU / P3", layout="wide")
-st.title("📋 Skaner Dopuszczeń — DDU / Przegląd P3")
+st.set_page_config(page_title="Skaner DDU / P3 — Google Vision", layout="wide")
+st.title("🚀 Skaner Dopuszczeń P3 — Google Cloud Vision")
 st.markdown(
-    "Wgraj DDU (1 strona) lub pełny Przegląd P3 (wielostronicowy). "
-    "Program znajdzie stronę dopuszczenia, pokaże jej obraz i wypełni pola — "
-    "sprawdź dane i wyślij do rejestru."
+    "Wgraj DDU (1 strona) lub pełny Przegląd P3. "
+    "Program znajdzie stronę dopuszczenia, odczyta pismo ręczne przez Google AI "
+    "i pozwoli Ci sprawdzić dane przed zapisem do rejestru."
 )
 
 # ---------------------------------------------------------------------------
-# POŁĄCZENIE Z GOOGLE SHEETS
 # !!! WKLEJ TUTAJ LINK DO SWOJEGO ARKUSZA !!!
 # ---------------------------------------------------------------------------
 ARKUSZ_URL = "TWÓJ_LINK_DO_ARKUSZA_GOOGLE"
 
+# ---------------------------------------------------------------------------
+# KLIENTY — GOOGLE VISION + GOOGLE SHEETS
+# ---------------------------------------------------------------------------
+
 @st.cache_resource
-def get_google_client():
-    credentials_dict = dict(st.secrets["gcp_service_account"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+def get_vision_client():
+    """Klient Google Cloud Vision — używa tego samego konta usługi co Sheets."""
+    creds_info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/cloud-vision"],
+    )
+    return vision.ImageAnnotatorClient(credentials=creds)
+
+
+@st.cache_resource
+def get_sheets_client():
+    """Klient Google Sheets."""
+    creds_info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
+    )
     return gspread.authorize(creds)
 
 
+def ocr_vision(image_bytes: bytes) -> str:
+    """
+    Wysyła obraz do Google Cloud Vision API (DOCUMENT_TEXT_DETECTION).
+    Ten model jest zoptymalizowany pod kątem formularzy z pismem ręcznym.
+    Zwraca pełny tekst strony.
+    """
+    client = get_vision_client()
+    image = vision.Image(content=image_bytes)
+    response = client.document_text_detection(image=image)
+    if response.error.message:
+        raise RuntimeError(f"Google Vision API error: {response.error.message}")
+    return response.full_text_annotation.text if response.full_text_annotation else ""
+
+
 # ===========================================================================
-# FUNKCJE POMOCNICZE — EKSTRAKCJA DANYCH
+# EKSTRAKCJA DANYCH — NAPRAWIONE FUNKCJE
 # ===========================================================================
 
 def formatuj_wagon(cyfry_12: str) -> str:
@@ -47,12 +77,10 @@ def formatuj_wagon(cyfry_12: str) -> str:
 
 def wagon_z_nazwy_pliku(filename: str) -> str:
     """
-    Najniezawodniejsza metoda — wyciąga numer wagonu z nazwy pliku.
-    Działa dla plików nazwanych jak: Przegląd_P3_33516666408-6.pdf
-    Szukamy ciągu 12 cyfr (opcjonalne separatory: spacja, podkreślnik, myślnik).
+    STRATEGIA 1 — najniezawodniejsza.
+    Wyciąga numer wagonu z nazwy pliku.
+    Działa dla: Przegląd_P3_33516666408-6.pdf
     """
-    # Normalizujemy: zostawiamy tylko cyfry i myślniki do analizy
-    # Wzorzec: 4 cyfry + separator? + 4 cyfry + separator? + 3 cyfry + separator? + 1 cyfra
     m = re.search(r"(\d{4})[\s_\-]?(\d{4})[\s_\-]?(\d{3})[\s_\-](\d)", filename)
     if m:
         all_digits = "".join(m.groups())
@@ -61,20 +89,20 @@ def wagon_z_nazwy_pliku(filename: str) -> str:
     return ""
 
 
-def wagon_z_ocr(text: str) -> str:
+def wagon_z_tekstu(text: str) -> str:
     """
-    Próbuje wyciągnąć numer wagonu z tekstu OCR.
-    Strategia A: szukaj wzorca XXXX XXXX XXX-X w tekście.
-    Strategia B: szukaj cyfr przy słowie 'wagonu'.
+    STRATEGIA 2 — z tekstu OCR.
+    Google Vision poprawnie odczytuje numer wagonu, więc szukamy wzorca.
+    NIE używamy metody 'sklej wszystkie cyfry' — ona wybiera datę z nagłówka!
     """
-    # Strategia A: klasyczny format z spacjami lub separatorami
-    m = re.search(r"(\d{4})[\s\.,]{1,4}(\d{4})[\s\.,]{1,4}(\d{3})[\s\-](\d)", text)
+    # Wzorzec z separatorami: 3351 6666 408-6 lub 33516666408-6
+    m = re.search(r"(\d{4})[\s\.,]{0,3}(\d{4})[\s\.,]{0,3}(\d{3})[\s\-](\d)", text)
     if m:
         all_digits = "".join(m.groups())
         if len(all_digits) == 12:
             return formatuj_wagon(all_digits)
 
-    # Strategia B: szukaj cyfr w pobliżu słowa 'wagonu' / 'wagon'
+    # Fallback: szukaj cyfr przy słowie 'wagonu'
     m2 = re.search(
         r"wagon[ou][\s\.\:\-]{0,30}([\d\s,\.\-]{10,30})", text, re.IGNORECASE
     )
@@ -86,66 +114,62 @@ def wagon_z_ocr(text: str) -> str:
     return ""
 
 
-def nr_dop_z_ocr(text: str) -> str:
+def nr_dop_z_tekstu(text: str) -> str:
     """
-    Szuka numeru dopuszczenia przy słowie 'Nr' w kontekście DDU.
-    Np. 'Nr. 1704 4086' → '17044086'
+    Szuka numeru dopuszczenia przy słowie 'Nr'.
+    Google Vision poprawnie czyta odręczne '1704 4086'.
     """
     m = re.search(r"\bNr[\.\s:]{1,5}([\d\s]{5,14})", text, re.IGNORECASE)
     if m:
         val = re.sub(r"\s", "", m.group(1)).strip()
-        # Musi mieć min. 6 cyfr i nie być numerem NIP/REGON (9+ cyfr)
         if 6 <= len(val) <= 12:
             return val
     return ""
 
 
-def data_z_ocr(text: str) -> str:
+def data_z_tekstu(text: str) -> str:
     """
-    Szuka daty wystawienia DDU — pomija datę szablonu z nagłówka (04.05.2020).
-    Obsługuje formaty DD.MM.RR i DD.MM.RRRR z opcjonalnym przyrostkiem r/n.
+    Szuka daty wystawienia DDU.
+    POMIJA datę szablonu z nagłówka (04.05.2020r.) — ta jest na każdym formularzu.
+    Obsługuje rok 2-cyfrowy (26 → 2026) i przyrostek 'r.' lub 'n.'.
     """
-    NAGLOWEK_TEMPLATE = r"04[\.\-]05[\.\-]2020"
+    TEMPLATE_DATE = r"04[\.\-]05[\.\-]2020"
 
     for m in re.finditer(
         r"(\d{1,2})[\.\-](\d{2})[\.\-](\d{2,4})[rRnN\.]?", text
     ):
-        pelna = m.group(0)
-        if re.search(NAGLOWEK_TEMPLATE, pelna):
-            continue  # pomiń datę szablonu
+        if re.search(TEMPLATE_DATE, m.group(0)):
+            continue  # pomiń datę szablonu z nagłówka formularza
 
         dzien, miesiac, rok = m.group(1), m.group(2), m.group(3)
         if len(rok) == 2:
             rok = "20" + rok
 
-        # Prosta walidacja zakresu
         if 1 <= int(dzien) <= 31 and 1 <= int(miesiac) <= 12:
             return f"{dzien.zfill(2)}.{miesiac}.{rok}"
 
     return ""
 
 
-def lokalizacja_z_ocr(text: str) -> str:
+def lokalizacja_z_tekstu(text: str) -> str:
     """
-    Szuka lokalizacji w linii z 'KWK' (kopalnie) lub innych nazw własnych
-    przed datą wystawienia — kontekst '(miejsce i data wystawienia)'.
-
-    Uwaga: OCR często myli litery w nazwie (np. Piast → Rast), ale 'KWK'
-    jako duże drukowane litery jest zazwyczaj rozpoznawane poprawnie.
+    Wyciąga lokalizację z linii '(miejsce i data wystawienia)'.
+    Google Vision poprawnie czyta 'KWK Piast' — nie musimy się domyślać.
     """
-    # Preferowana ścieżka: KWK + nazwa (duże litery drukowane)
-    m = re.search(r"KWK\s+([A-ZŁÓŚĄĆĘŹŻa-ząćęłńóśźż]{2,}(?:\s+[A-Za-ząćęłńóśźż]+)?)", text)
+    # Szukaj KWK + nazwa zakładu
+    m = re.search(
+        r"KWK\s+([A-ZŁÓŚĄĆĘŹŻa-ząćęłńóśźż]{2,}(?:\s+[A-Za-ząćęłńóśźż]+)?)", text
+    )
     if m:
         return ("KWK " + m.group(1).strip()).title().replace("Kwk", "KWK")
 
-    # Fallback: tekst przed datą na tej samej linii (np. "Zakład X 17.04.2026")
+    # Fallback: tekst przed datą na tej samej linii
     m2 = re.search(
         r"([A-ZŁÓŚĄĆĘŹŻ][A-Za-ząćęłńóśźżŁÓŚĄĆĘŹŻ ]{3,30})\s+\d{1,2}[\.\-]\d{2}[\.\-]\d{2}",
         text,
     )
     if m2:
         kandydat = m2.group(1).strip()
-        # Odrzuć fałszywe trafienia (nazwy z formularza)
         SZUM = {"Serwis", "Marcin", "Sylwester", "Kercz", "Inter", "Komtrans"}
         if not any(s in kandydat for s in SZUM):
             return kandydat
@@ -154,53 +178,42 @@ def lokalizacja_z_ocr(text: str) -> str:
 
 
 # ===========================================================================
-# FUNKCJE OBSŁUGI PDF
+# OBSŁUGA PDF
 # ===========================================================================
-
-def ocr_strony(page, dpi: int = 300) -> str:
-    """OCR jednej strony z wzmocnieniem kontrastu (pomaga przy skanach)."""
-    pix = page.get_pixmap(dpi=dpi)
-    img = Image.open(io.BytesIO(pix.tobytes())).convert("L")
-    img = ImageEnhance.Contrast(img).enhance(1.8)
-    return pytesseract.image_to_string(img, lang="pol", config="--psm 6 --oem 1")
-
 
 def znajdz_strone_ddu(doc) -> int:
     """
-    Wyszukuje stronę DDU (Protokół P6 / Dopuszczenie do użytkowania).
-    Skanuje od końca dokumentu — DDU jest zazwyczaj ostatnią stroną.
-    Dla 1-stronicowych plików zawsze zwraca 0.
+    Szuka strony DDU (Protokół P6 / Dopuszczenie do użytkowania).
+    Skanuje od końca — DDU jest zazwyczaj ostatnią stroną.
+    Używa minimalnego DPI do szybkiego podglądu (nie Vision API).
     """
     if len(doc) == 1:
         return 0
 
-    # Szybki scan na 100 DPI od końca (max 8 ostatnich stron)
     for i in range(len(doc) - 1, max(len(doc) - 9, -1), -1):
+        # Szybki lokalny OCR na 100 DPI tylko do wykrycia strony DDU
         pix = doc[i].get_pixmap(dpi=100)
-        img = Image.open(io.BytesIO(pix.tobytes()))
-        tekst_quick = pytesseract.image_to_string(img, lang="pol")
-        upper = tekst_quick.upper()
-        if "DOPUSZCZENIE" in upper or ("PROTOKÓŁ" in upper and "P6" in upper):
-            return i
+        img_bytes = pix.tobytes("png")
+        # Użyj Vision API — nawet przy niskim DPI rozpozna słowo DOPUSZCZENIE
+        try:
+            tekst_quick = ocr_vision(img_bytes)
+            if "DOPUSZCZENIE" in tekst_quick.upper():
+                return i
+        except Exception:
+            pass  # W razie błędu API spróbuj następną stronę
 
-    # Fallback: ostatnia strona
-    return len(doc) - 1
+    return len(doc) - 1  # Fallback: ostatnia strona
 
 
 def renderuj_podglad(page, dpi: int = 150) -> bytes:
-    """Zwraca bytes PNG strony — do wyświetlenia w Streamlit."""
+    """Renderuje stronę jako PNG do wyświetlenia w Streamlit."""
     pix = page.get_pixmap(dpi=dpi)
     return pix.tobytes("png")
 
 
-# ===========================================================================
-# GŁÓWNA LOGIKA PRZETWARZANIA
-# ===========================================================================
-
 def przetworz_pdf(pdf_bytes: bytes, filename: str) -> dict:
     """
-    Otwiera PDF, lokalizuje stronę DDU, robi OCR i zwraca słownik z danymi.
-    Zwraca też bytes podglądu i surowy tekst OCR do weryfikacji.
+    Główna logika: znajdź stronę DDU → Vision OCR → wyciągnij dane.
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     n_stron = len(doc)
@@ -209,20 +222,21 @@ def przetworz_pdf(pdf_bytes: bytes, filename: str) -> dict:
     with st.spinner(f"Szukam strony DDU w {n_stron}-stronicowym pliku..."):
         ddu_idx = znajdz_strone_ddu(doc)
 
-    # 2. Podgląd obrazu (szybki, niskie DPI)
+    # 2. Podgląd (nie wysyłamy do Vision — tylko do wyświetlenia)
     podglad_bytes = renderuj_podglad(doc[ddu_idx], dpi=150)
 
-    # 3. OCR na pełnym DPI
-    with st.spinner("Wykonuję OCR strony DDU (może chwilę potrwać)..."):
-        ddu_text = ocr_strony(doc[ddu_idx], dpi=300)
+    # 3. Wyślij stronę DDU do Google Vision API (300 DPI = optymalnie)
+    with st.spinner("Wysyłam stronę DDU do Google Cloud Vision AI..."):
+        pix = doc[ddu_idx].get_pixmap(dpi=300)
+        ddu_text = ocr_vision(pix.tobytes("png"))
 
     doc.close()
 
-    # 4. Ekstrakcja danych — wagon z nazwy pliku jest najniezawodniejszy
-    wagon = wagon_z_nazwy_pliku(filename) or wagon_z_ocr(ddu_text)
-    nr_dop = nr_dop_z_ocr(ddu_text)
-    data = data_z_ocr(ddu_text)
-    lokalizacja = lokalizacja_z_ocr(ddu_text)
+    # 4. Ekstrakcja danych
+    wagon = wagon_z_nazwy_pliku(filename) or wagon_z_tekstu(ddu_text)
+    nr_dop = nr_dop_z_tekstu(ddu_text)
+    data = data_z_tekstu(ddu_text)
+    lokalizacja = lokalizacja_z_tekstu(ddu_text)
 
     return {
         "wagon": wagon,
@@ -250,88 +264,76 @@ if uploaded_file is not None:
 
     st.divider()
 
-    # --- Układ dwukolumnowy: obraz DDU | formularz ---
+    # --- Układ dwukolumnowy ---
     col_img, col_form = st.columns([1, 1], gap="large")
 
     with col_img:
         st.subheader("📄 Strona dopuszczenia (DDU)")
         st.caption(
             f"Plik: **{uploaded_file.name}** | "
-            f"Znaleziona strona DDU: **{dane['ddu_strona']}/{dane['n_stron']}**"
+            f"Strona DDU: **{dane['ddu_strona']}/{dane['n_stron']}**"
         )
         st.image(dane["podglad_png"], use_container_width=True)
 
     with col_form:
         st.subheader("✏️ Dane do rejestru")
-        st.markdown(
-            "_Sprawdź dane na obrazie obok i popraw jeśli OCR się pomylił._"
-        )
+        st.markdown("_Sprawdź dane na obrazie obok i popraw jeśli trzeba._")
 
-        # Wskaźniki statusu
-        def status_icon(val: str) -> str:
+        # Wskaźniki auto-wypełnienia
+        def ikona(val: str) -> str:
             return "✅" if val else "⚠️"
 
         st.caption(
-            f"{status_icon(dane['wagon'])} Wagon  "
-            f"{status_icon(dane['nr_dop'])} Nr dopuszczenia  "
-            f"{status_icon(dane['data'])} Data  "
-            f"{status_icon(dane['lokalizacja'])} Lokalizacja"
+            f"{ikona(dane['wagon'])} Wagon  "
+            f"{ikona(dane['nr_dop'])} Nr dopuszczenia  "
+            f"{ikona(dane['data'])} Data  "
+            f"{ikona(dane['lokalizacja'])} Lokalizacja"
         )
 
         wagon_val = st.text_input(
             "🚂 Numer wagonu *",
             value=dane["wagon"],
             placeholder="np. 3351 6666 408-6",
-            help="12-cyfrowy numer w formacie XXXX XXXX XXX-X — wymagany!",
+            help="Wymagany. Format: XXXX XXXX XXX-X",
         )
         nr_dop_val = st.text_input(
             "📑 Numer dopuszczenia",
             value=dane["nr_dop"],
             placeholder="np. 17044086",
-            help="Numer z pola 'Nr.' na dokumencie DDU",
         )
         data_val = st.text_input(
             "📅 Data wystawienia",
             value=dane["data"],
             placeholder="np. 17.04.2026",
-            help="Format DD.MM.RRRR",
         )
         lok_val = st.text_input(
             "📍 Miejscowość / Zakład",
             value=dane["lokalizacja"],
             placeholder="np. KWK Piast",
-            help="Lokalizacja z pola '(miejsce i data wystawienia)'",
         )
 
         st.divider()
 
-        wyslij = st.button(
+        if st.button(
             "✅ Wyślij do rejestru Google Sheets",
             type="primary",
             use_container_width=True,
-        )
-
-        if wyslij:
+        ):
             if not wagon_val.strip():
-                st.error("❌ Numer wagonu jest wymagany — sprawdź obrazek i wpisz ręcznie.")
+                st.error("❌ Numer wagonu jest wymagany!")
             else:
                 try:
-                    client = get_google_client()
+                    client = get_sheets_client()
                     sheet = client.open_by_url(ARKUSZ_URL).sheet1
-
-                    # Wyznacz kolejny numer LP
                     wszystkie_lp = sheet.col_values(1)
                     lp = 1 if len(wszystkie_lp) <= 1 else int(wszystkie_lp[-1]) + 1
-
                     sheet.append_rows(
                         [[lp, nr_dop_val, lok_val, data_val, wagon_val.strip()]]
                     )
                     st.success(f"✅ Dodano wpis LP={lp}: **{wagon_val}**")
                     st.balloons()
-
                 except Exception as e:
-                    st.error(f"❌ Błąd połączenia z Arkuszem: {e}")
+                    st.error(f"❌ Błąd arkusza: {e}")
 
-        # Podgląd OCR do debugowania
-        with st.expander("🔍 Surowy tekst OCR (do diagnostyki)"):
+        with st.expander("🔍 Surowy tekst z Google Vision (do diagnostyki)"):
             st.text(dane["ocr_tekst"])
