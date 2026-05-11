@@ -1,6 +1,6 @@
 streamlit
 PyMuPDF
-pytesseract
 Pillow
 gspread
 google-auth
+google-cloud-vision
