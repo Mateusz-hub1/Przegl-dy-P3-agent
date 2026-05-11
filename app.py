@@ -22,7 +22,7 @@ st.markdown(
 # POŁĄCZENIE Z GOOGLE SHEETS
 # !!! WKLEJ TUTAJ LINK DO SWOJEGO ARKUSZA !!!
 # ---------------------------------------------------------------------------
-ARKUSZ_URL = "TWÓJ_LINK_DO_ARKUSZA_GOOGLE"
+ARKUSZ_URL = "https://docs.google.com/spreadsheets/d/1Np2uu4NI7cJ2vYeNuC57ugAQ0wKsvN5gPqUqY745Ikw/edit?usp=sharing"
 
 @st.cache_resource
 def get_google_client():
