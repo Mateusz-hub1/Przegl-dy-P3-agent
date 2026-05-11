@@ -14,7 +14,7 @@ from pathlib import Path
 # KONFIGURACJA STRONY
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="KORCZ — Skaner DDU / P3",
+    page_title="SPK KORCZ — Skaner DDU / P3",
     layout="wide",
     initial_sidebar_state="collapsed",
     page_icon="🚂",
@@ -46,11 +46,11 @@ st.markdown("""
     border-bottom: 3px solid #e5001a;
     margin-bottom: 32px;
   }
-  .korcz-logo-text {
+  .-logo-text {
     font-family: 'Barlow Condensed', sans-serif;
   }
-  .korcz-logo-text .brand { font-size: 2.6rem; font-weight: 900; color: #e5001a; letter-spacing: 2px; line-height: 1; }
-  .korcz-logo-text .sub   { font-size: 1rem; font-weight: 600; color: #cccccc; letter-spacing: 3px; text-transform: uppercase; }
+  .-logo-text .brand { font-size: 2.6rem; font-weight: 900; color: #e5001a; letter-spacing: 2px; line-height: 1; }
+  .-logo-text .sub   { font-size: 1rem; font-weight: 600; color: #cccccc; letter-spacing: 3px; text-transform: uppercase; }
 
   /* ---- KARTY ---- */
   .card {
@@ -213,9 +213,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# LOGO KORCZ — z pliku PNG (base64) lub fallback tekstowy
+# LOGO  — z pliku PNG (base64) lub fallback tekstowy
 # ---------------------------------------------------------------------------
-LOGO_PATH = Path(__file__).parent / "logo_spkkorcz.png"
+LOGO_PATH = Path(__file__).parent / "logo_spk.png"
 
 def get_logo_html() -> str:
     try:
@@ -226,11 +226,11 @@ def get_logo_html() -> str:
         return '<div style="font-size:2rem;">🚂</div>'
 
 st.markdown(f"""
-<div class="korcz-header">
+<div class="-header">
   {get_logo_html()}
-  <div class="korcz-logo-text">
-    <div class="brand">KORCZ</div>
-    <div class="sub">Skaner DDU / Przegląd P3</div>
+  <div class="-logo-text">
+    <div class="brand">SPK KORCZ</div>
+    <div class="sub">Skaner i rejestr DDU / Przegląd P3</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
