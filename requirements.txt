@@ -1,0 +1,6 @@
+streamlit
+PyMuPDF
+pytesseract
+Pillow
+gspread
+google-auth
