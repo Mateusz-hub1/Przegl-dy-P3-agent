@@ -9,8 +9,8 @@ from google.oauth2.service_account import Credentials
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="Skaner Przeglądów P3", layout="wide")
-st.title("📄 Masowy Skaner Dopuszczeń P3")
-st.markdown("Wgraj plik PDF z wieloma dopuszczeniami. Dane zostaną dopisane do rejestru od drugiego wiersza.")
+st.title("📄 Elastyczny Skaner Dopuszczeń P3")
+st.markdown("Program automatycznie wykrywa dane na stronach PDF i dopisuje je do rejestru.")
 
 # --- POŁĄCZENIE Z GOOGLE SHEETS ---
 @st.cache_resource
@@ -23,21 +23,40 @@ def get_google_client():
 # !!! TUTAJ WKLEJ LINK DO SWOJEGO ARKUSZA GOOGLE !!!
 ARKUSZ_URL = "TWÓJ_LINK_DO_ARKUSZA_GOOGLE" 
 
+def wyciagnij_cyfry(text):
+    """Usuwa wszystko poza cyframi z tekstu."""
+    return "".join(re.findall(r'\d', text))
+
 def analizuj_strone(text):
-    """Wyciąga dane z tekstu jednej strony dokumentu."""
-    # Nr wagonu: szuka 12 cyfr ignorując niemal wszystko pomiędzy nimi [cite: 502]
-    wagon_match = re.search(r'(\d{2})[\s\.\-]*(\d{2})[\s\.\-]*(\d{4})[\s\.\-]*(\d{3})[\s\.\-]*(\d)', text)
-    wagon = f"{wagon_match.group(1)}{wagon_match.group(2)} {wagon_match.group(3)} {wagon_match.group(4)}-{wagon_match.group(5)}" if wagon_match else "Brak"
+    """Bardzo elastyczna ekstrakcja danych z tekstu strony."""
+    # 1. WAGON (Szukamy 12 cyfr w całym tekście strony)
+    # Wyciągamy wszystkie ciągi cyfr i sprawdzamy, czy któryś ma 12 znaków
+    cyfry_tekst = wyciagnij_cyfry(text)
+    wagon = "Brak"
+    # Szukamy ciągu 12 cyfr w tekście (często występują obok siebie)
+    wagon_match = re.search(r'\d{12}', cyfry_tekst)
+    if wagon_match:
+        w = wagon_match.group(0)
+        wagon = f"{w[0:4]} {w[4:8]} {w[8:11]}-{w[11]}"
+    else:
+        # Próba znalezienia 12 cyfr rozrzuconych (np. ze spacjami)
+        potential = re.findall(r'\d', text)
+        if len(potential) >= 12:
+            # Bierzemy pierwsze 12 cyfr jako numer wagonu
+            w = "".join(potential[:12])
+            wagon = f"{w[0:4]} {w[4:8]} {w[8:11]}-{w[11]}"
 
-    # Nr dopuszczenia: szuka po słowie 'Nr' [cite: 501]
-    dop_match = re.search(r'Nr[\.\s\_]*([\d\s]{4,15})', text, re.IGNORECASE)
-    nr_dop = dop_match.group(1).strip().replace(" ", "") if dop_match else "Brak"
+    # 2. NR DOPUSZCZENIA (Szukamy numeru po słowie 'Nr' lub 'DOPUSZCZENIE')
+    nr_dop = "Brak"
+    dop_match = re.search(r'(?:Nr|Dopuszczenie)[\.\s\:]*([\d\s]{4,12})', text, re.IGNORECASE)
+    if dop_match:
+        nr_dop = dop_match.group(1).strip().replace(" ", "")
 
-    # Data: format DD.MM.RR lub DD.MM.RRRR [cite: 503]
+    # 3. DATA (Standardowy format DD.MM.RR/RRRR)
     date_match = re.search(r'(\d{2}\.\d{2}\.\d{2,4})', text)
     date = date_match.group(1).rstrip('.') if date_match else "Brak"
 
-    # Miejscowość: szuka KWK Piast [cite: 503]
+    # 4. MIEJSCOWOŚĆ
     location = "KWK Piast" if re.search(r'KWK\s*Piast', text, re.IGNORECASE) else "Brak"
     
     return {"data": date, "wagon": wagon, "nr_dop": nr_dop, "miejscowosc": location}
@@ -48,15 +67,15 @@ def procesuj_pdf(pdf_bytes):
     pb = st.progress(0)
     
     for i, page in enumerate(doc):
-        # Wyciągamy tekst (cyfrowy lub OCR jeśli skan) [cite: 487-542]
         page_text = page.get_text()
-        if len(page_text.strip()) < 30:
+        # Jeśli strona jest skanem (mało tekstu), wymuś OCR [cite: 494-542]
+        if len(page_text.strip()) < 40:
             pix = page.get_pixmap(dpi=300)
             img = Image.open(io.BytesIO(pix.tobytes()))
             page_text = pytesseract.image_to_string(img, lang='pol')
         
         dane = analizuj_strone(page_text)
-        # Dodajemy tylko jeśli coś sensownego znaleziono na stronie 
+        # Dodajemy stronę do wyników, jeśli znaleziono wagon LUB numer dopuszczenia
         if dane["wagon"] != "Brak" or dane["nr_dop"] != "Brak":
             wyniki.append(dane)
         
@@ -66,23 +85,23 @@ def procesuj_pdf(pdf_bytes):
     return wyniki
 
 # --- INTERFEJS ---
-uploaded_file = st.file_uploader("Wgraj PDF (jedno lub wiele dopuszczeń)", type="pdf")
+uploaded_file = st.file_uploader("Wgraj dowolny PDF z dopuszczeniami", type="pdf")
 
-if uploaded_file and st.button("Skanuj i wyślij"):
-    with st.spinner("Pracuję..."):
+if uploaded_file and st.button("Skanuj i wyślij do rejestru"):
+    with st.spinner("Analizowanie dokumentów..."):
         paczka_danych = procesuj_pdf(uploaded_file.read())
         
         if not paczka_danych:
-            st.error("Nie znaleziono danych. Upewnij się, że plik to 'Dopuszczenie do użytkowania'.")
+            st.error("Nie znaleziono danych na żadnej ze stron. Spróbuj wyraźniejszego skanu.")
         else:
-            st.write(f"Znaleziono {len(paczka_danych)} dokumentów:")
+            st.write(f"Odczytano {len(paczka_danych)} rekord(y):")
             st.table(paczka_danych)
             
             try:
                 client = get_google_client()
                 sheet = client.open_by_url(ARKUSZ_URL).sheet1
                 
-                # Ustalanie kolejnego numeru LP (od drugiego wiersza)
+                # Dynamiczne ustalanie LP (ostatni wiersz w kolumnie A)
                 wszystkie_lp = sheet.col_values(1)
                 lp = 1 if len(wszystkie_lp) <= 1 else int(wszystkie_lp[-1]) + 1
                 
@@ -92,7 +111,7 @@ if uploaded_file and st.button("Skanuj i wyślij"):
                     lp += 1
                 
                 sheet.append_rows(wiersze_do_zapisu)
-                st.success(f"Dodano {len(wiersze_do_zapisu)} wpisów do rejestru!")
+                st.success(f"Pomyślnie dodano {len(wiersze_do_zapisu)} wpisów!")
                 st.balloons()
             except Exception as e:
-                st.error(f"Błąd arkusza: {e}")
+                st.error(f"Błąd połączenia z Arkuszem: {e}")
