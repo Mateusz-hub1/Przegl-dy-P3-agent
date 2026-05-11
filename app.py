@@ -14,7 +14,7 @@ from pathlib import Path
 # KONFIGURACJA STRONY
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="KORCZ — Skaner DDU / P3",
+    page_title="SPK KORCZ — Skaner DDU / P3",
     layout="wide",
     initial_sidebar_state="collapsed",
     page_icon="🚂",
