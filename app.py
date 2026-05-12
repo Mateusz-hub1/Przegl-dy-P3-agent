@@ -9,6 +9,8 @@ from google.oauth2.service_account import Credentials
 import time
 import base64
 from pathlib import Path
+import cv2
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # KONFIGURACJA STRONY
@@ -263,6 +265,7 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 LOGO_PATH = Path(__file__).parent / "logo_spkkorcz.png"
 
+
 def get_logo_html() -> str:
     try:
         with open(LOGO_PATH, "rb") as f:
@@ -270,6 +273,7 @@ def get_logo_html() -> str:
         return f'<img src="data:image/png;base64,{b64}" style="height:60px;filter:brightness(1.05);">'
     except Exception:
         return '<div style="font-size:2.5rem;">🚂</div>'
+
 
 st.markdown(f"""
 <div class="korcz-header">
@@ -279,7 +283,7 @@ st.markdown(f"""
     <div class="sub">System Skanowania Dokumentów Kolejowych</div>
   </div>
   <div class="korcz-header-right">
-    <div class="ver">v4.0 &nbsp;·&nbsp; DDU / P3 / Mw 581</div>
+    <div class="ver">v4.5 &nbsp;·&nbsp; OpenCV + DDU / P3</div>
     <div style="margin-top:6px">
       <span class="status-dot"></span>
       <span class="status-txt">System aktywny</span>
@@ -291,8 +295,9 @@ st.markdown(f"""
 # ---------------------------------------------------------------------------
 # GOOGLE SHEETS
 # ---------------------------------------------------------------------------
-ARKUSZ_P3_URL  = st.secrets.get("ARKUSZ_P3_URL",  "https://docs.google.com/spreadsheets/d/1Np2uu4NI7cJ2vYeNuC57ugAQ0wKsvN5gPqUqY745Ikw/edit?usp=sharing")
-ARKUSZ_DDU_URL = st.secrets.get("ARKUSZ_DDU_URL", "https://docs.google.com/spreadsheets/d/1lUEohyHvKBwydg9IB3hJQ6pJs0fjptcZHxD-gc4ef-k/edit?usp=sharing")
+ARKUSZ_P3_URL = "https://docs.google.com/spreadsheets/d/1Np2uu4NI7cJ2vYeNuC57ugAQ0wKsvN5gPqUqY745Ikw/edit?usp=sharing"
+ARKUSZ_DDU_URL = "https://docs.google.com/spreadsheets/d/1lUEohyHvKBwydg9IB3hJQ6pJs0fjptcZHxD-gc4ef-k/edit?usp=sharing"
+
 
 @st.cache_resource
 def get_google_client():
@@ -320,6 +325,7 @@ SLOWA_DDU = [
     "ODBIORU WAGONÓW TOWAROWYCH", "ODBIORU WAGONOW TOWAROWYCH",
 ]
 
+
 def wykryj_typ(text: str) -> str:
     upper = text.upper()
     for kw in SLOWA_P3:
@@ -342,18 +348,27 @@ def formatuj_wagon(cyfry: str) -> str:
         return cyfry
     return f"{d[0:4]} {d[4:8]} {d[8:11]}-{d[11]}"
 
+
 def _znajdz_wagony_raw(text: str) -> list:
-    text_c = re.sub(r"(?m)^\s*\d{1,2}[\.\)\s]\s*", " ", text)
+    # 1. Agresywna korekta najczęstszych błędów OCR w obrębie ciągów alfanumerycznych
+    text_c = text.replace("O", "0").replace("Q", "0")
+    text_c = text_c.replace("S", "5").replace("s", "5")
+    text_c = text_c.replace("l", "1").replace("I", "1").replace("!", "1")
+    text_c = text_c.replace("B", "8")
+
+    text_c = re.sub(r"(?m)^\s*\d{1,2}[\.\)\s]\s*", " ", text_c)
     found, seen = [], set()
-    for m in re.finditer(r"\b(\d[\d\s\-\.]{9,16}\d)\b", text_c):
+
+    # 2. Tolerancja na luźne spacje i tabulacje w Tesserakcie
+    for m in re.finditer(r"\b(\d[\d\s\t\n\-\.]{9,20}\d)\b", text_c):
         raw = re.sub(r"\D", "", m.group(1))
         if len(raw) == 12 and raw not in seen:
-            # Odrzuć telefony
             if raw[:2] in ("48",) or raw[:3] in ("881", "882", "535", "538"):
                 continue
             seen.add(raw)
             found.append(raw)
     return found
+
 
 def wagon_z_nazwy(fname: str) -> str:
     m = re.search(r"(\d{4})[\s_\-]?(\d{4})[\s_\-]?(\d{3})[\s_\-](\d)", fname)
@@ -362,12 +377,15 @@ def wagon_z_nazwy(fname: str) -> str:
         return formatuj_wagon(d) if len(d) == 12 else ""
     return ""
 
+
 def jeden_wagon(text: str) -> str:
     r = _znajdz_wagony_raw(text)
     return formatuj_wagon(r[0]) if r else ""
 
+
 def wiele_wagonow(text: str) -> list:
     return [formatuj_wagon(r) for r in _znajdz_wagony_raw(text)]
+
 
 def nr_dop(text: str) -> str:
     m = re.search(r"\bNr[\.\s:]{1,5}([\d\s]{5,14})", text, re.IGNORECASE)
@@ -376,6 +394,7 @@ def nr_dop(text: str) -> str:
         if 6 <= len(v) <= 12:
             return v
     return ""
+
 
 def data_doku(text: str) -> str:
     SKIP = r"04[\.\-]05[\.\-]2020"
@@ -391,6 +410,7 @@ def data_doku(text: str) -> str:
             pass
     return ""
 
+
 ZNANE = [
     "KWK Janina", "KWK Ziemowit", "KWK Piast", "KWK Murcki", "KWK Pniówek",
     "KWK Budryk", "KWK Bielszowice", "KWK Mysłowice", "KWK Bolesław Śmiały",
@@ -398,6 +418,7 @@ ZNANE = [
     "Elektrownia Jaworzno", "Elektrownia Łagisza", "Elektrownia Siersza",
     "Elektrownia Rybnik", "Elektrownia Połaniec",
 ]
+
 
 def lokalizacja(text: str) -> str:
     up = text.upper()
@@ -420,35 +441,39 @@ def lokalizacja(text: str) -> str:
 
 
 # ===========================================================================
-# OBSŁUGA PLIKÓW — PDF i obrazy (JPG/PNG)
+# OBSŁUGA PLIKÓW — OpenCV + Tesseract
 # ===========================================================================
 SUPPORTED_TYPES = ["pdf", "jpg", "jpeg", "png"]
 
+
 def ocr_z_obrazu(img: Image.Image) -> str:
-    """OCR z obiektu PIL Image — wspólna ścieżka dla obrazów i stron PDF."""
+    """Wzmocniony OCR z użyciem OpenCV. Idealny dla zaszumionych zdjęć."""
     img_gray = img.convert("L")
-    # Skalowanie do min. 2400px szerokości dla dobrego OCR
+
     w, h = img_gray.size
-    if w < 2400:
-        scale = 2400 / w
+    if w < 2800:
+        scale = 2800 / w
         img_gray = img_gray.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    img_gray = ImageEnhance.Contrast(img_gray).enhance(1.8)
-    return pytesseract.image_to_string(img_gray, lang="pol", config="--psm 6 --oem 1")
+
+    open_cv_image = np.array(img_gray)
+    blurred = cv2.GaussianBlur(open_cv_image, (5, 5), 0)
+    binary = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 21, 15
+    )
+    final_img = Image.fromarray(binary)
+
+    return pytesseract.image_to_string(final_img, lang="pol", config="--psm 4 --oem 1")
+
 
 def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list:
-    """
-    Obsługuje PDF, JPG, PNG.
-    Zwraca listę rekordów — jeden lub wiele w zależności od typu dokumentu.
-    """
     ext = Path(filename).suffix.lower().lstrip(".")
 
     if ext == "pdf":
-        # ---- PDF ----
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         n_stron = len(doc)
+        ddu_idx = len(doc) - 1
 
-        # Znajdź stronę DDU (od końca)
-        ddu_idx = len(doc) - 1  # fallback
         if n_stron > 1:
             for i in range(n_stron - 1, max(n_stron - 9, -1), -1):
                 pix = doc[i].get_pixmap(dpi=100)
@@ -458,12 +483,11 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
                     ddu_idx = i
                     break
 
-        # Podgląd (150 DPI)
         pix_prev = doc[ddu_idx].get_pixmap(dpi=150)
         podglad = pix_prev.tobytes("png")
 
-        # OCR (300 DPI)
-        pix_ocr = doc[ddu_idx].get_pixmap(dpi=300)
+        # Zwiększone DPI (z 300 na 400) dla lepszego detalu przed OpenCV
+        pix_ocr = doc[ddu_idx].get_pixmap(dpi=400)
         img_ocr = Image.open(io.BytesIO(pix_ocr.tobytes()))
         tekst = ocr_z_obrazu(img_ocr)
         doc.close()
@@ -471,22 +495,19 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
         meta = dict(ddu_strona=ddu_idx + 1, n_stron=n_stron)
 
     else:
-        # ---- JPG / PNG ----
         img_raw = Image.open(io.BytesIO(file_bytes))
-
-        # Podgląd — zmniejsz do max 1200px szerokości
         img_prev = img_raw.copy()
         if img_prev.width > 1200:
             r = 1200 / img_prev.width
             img_prev = img_prev.resize((1200, int(img_prev.height * r)), Image.LANCZOS)
-        buf = io.BytesIO()
-        img_prev.convert("RGB").save(buf, format="PNG")
-        podglad = buf.getvalue()
+
+        with io.BytesIO() as buf:
+            img_prev.convert("RGB").save(buf, format="PNG")
+            podglad = buf.getvalue()
 
         tekst = ocr_z_obrazu(img_raw)
         meta = dict(ddu_strona=1, n_stron=1)
 
-    # Typ dokumentu
     typ = tryb if tryb != "AUTO" else wykryj_typ(tekst)
     dat = data_doku(tekst)
     lok = lokalizacja(tekst)
@@ -516,10 +537,9 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
 # ===========================================================================
 # SESSION STATE
 # ===========================================================================
-if "wyniki"        not in st.session_state: st.session_state.wyniki = []
+if "wyniki" not in st.session_state: st.session_state.wyniki = []
 if "edytowany_idx" not in st.session_state: st.session_state.edytowany_idx = None
-if "tryb"          not in st.session_state: st.session_state.tryb = "AUTO"
-
+if "tryb" not in st.session_state: st.session_state.tryb = "AUTO"
 
 # ===========================================================================
 # SEKCJA 1 — TRYB + UPLOAD
@@ -527,33 +547,31 @@ if "tryb"          not in st.session_state: st.session_state.tryb = "AUTO"
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown('<div class="card-header"><span class="ch-icon">📂</span> Wgraj dokumenty</div>', unsafe_allow_html=True)
 
-# Tryb — 3 kolumny z przyciskami
 c1, c2, c3, crest = st.columns([1.1, 0.85, 1.9, 4])
 with c1:
     if st.button("🔍 AUTO", use_container_width=True,
                  type="primary" if st.session_state.tryb == "AUTO" else "secondary"):
-        st.session_state.tryb = "AUTO"; st.rerun()
+        st.session_state.tryb = "AUTO";
+        st.rerun()
 with c2:
-    if st.button("📋 P3", use_container_width=True,
-                 type="primary" if st.session_state.tryb == "P3" else "secondary"):
-        st.session_state.tryb = "P3"; st.rerun()
+    if st.button("📋 P3", use_container_width=True, type="primary" if st.session_state.tryb == "P3" else "secondary"):
+        st.session_state.tryb = "P3";
+        st.rerun()
 with c3:
     if st.button("🔧 DDU / P1·P2 / Mw 581", use_container_width=True,
                  type="primary" if st.session_state.tryb == "DDU" else "secondary"):
-        st.session_state.tryb = "DDU"; st.rerun()
+        st.session_state.tryb = "DDU";
+        st.rerun()
 
 TRYB_INFO = {
     "AUTO": ("🔍", "#5599ff", "Automatyczne wykrywanie — program sam rozpozna typ dokumentu na podstawie treści."),
-    "P3":   ("📋", "#5599ff", "Tryb Przegląd P3 — jeden wagon na plik, zapis do arkusza P3."),
-    "DDU":  ("🔧", "#e5001a", "Tryb DDU / Mw 581 / P1·P2 — wyciąga wszystkie wagony z tabeli, zapis do arkusza DDU."),
+    "P3": ("📋", "#5599ff", "Tryb Przegląd P3 — jeden wagon na plik, zapis do arkusza P3."),
+    "DDU": ("🔧", "#e5001a", "Tryb DDU / Mw 581 / P1·P2 — wyciąga wszystkie wagony z tabeli, zapis do arkusza DDU."),
 }
 ic, col, opis = TRYB_INFO[st.session_state.tryb]
 st.markdown(
-    f'<div class="info-box"><span class="ib-icon">{ic}</span>'
-    f'<span style="color:{col}"><strong>Tryb {st.session_state.tryb}:</strong></span>'
-    f'&nbsp;{opis}</div>',
-    unsafe_allow_html=True,
-)
+    f'<div class="info-box"><span class="ib-icon">{ic}</span><span style="color:{col}"><strong>Tryb {st.session_state.tryb}:</strong></span>&nbsp;{opis}</div>',
+    unsafe_allow_html=True)
 
 uploaded_files = st.file_uploader(
     "Przeciągnij pliki lub kliknij — PDF, JPG, PNG",
@@ -561,9 +579,8 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
     label_visibility="collapsed",
 )
-st.markdown('</div>', unsafe_allow_html=True)  # /card
+st.markdown('</div>', unsafe_allow_html=True)
 
-# ---- Przetwarzanie ----
 if uploaded_files:
     przetworzone = {w["filename"] for w in st.session_state.wyniki}
     nowe = [f for f in uploaded_files if f.name not in przetworzone]
@@ -571,19 +588,14 @@ if uploaded_files:
     if nowe:
         prog_bar = st.progress(0, text="Inicjalizacja…")
         for i, plik in enumerate(nowe):
-            prog_bar.progress(
-                (i) / len(nowe),
-                text=f"⚙️ OCR: {plik.name}  ({i+1}/{len(nowe)})",
-            )
+            prog_bar.progress((i) / len(nowe), text=f"⚙️ OCR + OpenCV: {plik.name}  ({i + 1}/{len(nowe)})")
             try:
                 rekordy = przetworz_plik(plik.read(), plik.name, st.session_state.tryb)
                 st.session_state.wyniki.extend(rekordy)
             except Exception as e:
                 st.session_state.wyniki.append(dict(
-                    filename=plik.name, typ="?",
-                    wagon="", nr_dop="", data="", lokalizacja="",
-                    ddu_strona=0, n_stron=0,
-                    podglad_png=None, ocr_tekst="",
+                    filename=plik.name, typ="?", wagon="", nr_dop="", data="", lokalizacja="",
+                    ddu_strona=0, n_stron=0, podglad_png=None, ocr_tekst="",
                     wyslano=False, blad=str(e),
                 ))
             time.sleep(0.03)
@@ -593,34 +605,32 @@ if uploaded_files:
         prog_bar.empty()
         st.rerun()
 
-
 # ===========================================================================
 # SEKCJA 2 — DASHBOARD + TABELA
 # ===========================================================================
 wyniki = st.session_state.wyniki
 
 if wyniki:
-    n_p3  = sum(1 for w in wyniki if w["typ"] == "P3")
+    n_p3 = sum(1 for w in wyniki if w["typ"] == "P3")
     n_ddu = sum(1 for w in wyniki if w["typ"] == "DDU")
-    n_ok  = sum(1 for w in wyniki if w["wagon"] and not w["blad"])
-    n_prob= sum(1 for w in wyniki if not w["wagon"] or w["blad"])
+    n_ok = sum(1 for w in wyniki if w["wagon"] and not w["blad"])
+    n_prob = sum(1 for w in wyniki if not w["wagon"] or w["blad"])
     n_wys = sum(1 for w in wyniki if w["wyslano"])
 
     mc = st.columns(6)
-    mc[0].metric("Rekordów",  len(wyniki))
-    mc[1].metric("Typ P3",    n_p3)
-    mc[2].metric("Typ DDU",   n_ddu)
-    mc[3].metric("Gotowe",    n_ok)
-    mc[4].metric("Korekta",   n_prob)
-    mc[5].metric("Wysłano",   n_wys)
+    mc[0].metric("Rekordów", len(wyniki))
+    mc[1].metric("Typ P3", n_p3)
+    mc[2].metric("Typ DDU", n_ddu)
+    mc[3].metric("Gotowe", n_ok)
+    mc[4].metric("Korekta", n_prob)
+    mc[5].metric("Wysłano", n_wys)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ---- TABELA ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header"><span class="ch-icon">📋</span> Wyniki skanowania</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-header"><span class="ch-icon">📋</span> Wyniki skanowania</div>',
+                unsafe_allow_html=True)
 
-    # Nagłówki kolumn
     hc = st.columns([0.3, 1.8, 0.6, 1.5, 0.95, 1.55, 1.0, 0.8, 0.6])
     for col, h in zip(hc, ["#", "Plik", "Typ", "Nr wagonu", "Nr dop.", "Lokalizacja", "Data", "Status", ""]):
         col.markdown(f'<div class="tbl-head">{h}</div>', unsafe_allow_html=True)
@@ -629,23 +639,33 @@ if wyniki:
     for idx, w in enumerate(wyniki):
         rc = st.columns([0.3, 1.8, 0.6, 1.5, 0.95, 1.55, 1.0, 0.8, 0.6])
 
-        rc[0].markdown(f'<div class="tbl-num" style="padding-top:8px">{idx+1}</div>', unsafe_allow_html=True)
+        rc[0].markdown(f'<div class="tbl-num" style="padding-top:8px">{idx + 1}</div>', unsafe_allow_html=True)
 
         bar = "type-bar-p3" if w["typ"] == "P3" else "type-bar-ddu"
-        rc[1].markdown(f'<div class="{bar} tbl-file" style="padding-top:6px">{w["filename"]}</div>', unsafe_allow_html=True)
+        rc[1].markdown(f'<div class="{bar} tbl-file" style="padding-top:6px">{w["filename"]}</div>',
+                       unsafe_allow_html=True)
 
-        tb = '<span class="badge badge-p3">P3</span>' if w["typ"] == "P3" else '<span class="badge badge-ddu">DDU</span>'
+        tb = '<span class="badge badge-p3">P3</span>' if w[
+                                                             "typ"] == "P3" else '<span class="badge badge-ddu">DDU</span>'
         rc[2].markdown(f'<div style="padding-top:6px">{tb}</div>', unsafe_allow_html=True)
 
-        rc[3].markdown(f'<div class="wagon-num" style="padding-top:6px">{w["wagon"] or "—"}</div>', unsafe_allow_html=True)
-        rc[4].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["nr_dop"] or "—"}</div>', unsafe_allow_html=True)
-        rc[5].markdown(f'<div class="tbl-meta-hi" style="padding-top:8px">{w["lokalizacja"] or "—"}</div>', unsafe_allow_html=True)
-        rc[6].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["data"] or "—"}</div>', unsafe_allow_html=True)
+        rc[3].markdown(f'<div class="wagon-num" style="padding-top:6px">{w["wagon"] or "—"}</div>',
+                       unsafe_allow_html=True)
+        rc[4].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["nr_dop"] or "—"}</div>',
+                       unsafe_allow_html=True)
+        rc[5].markdown(f'<div class="tbl-meta-hi" style="padding-top:8px">{w["lokalizacja"] or "—"}</div>',
+                       unsafe_allow_html=True)
+        rc[6].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["data"] or "—"}</div>',
+                       unsafe_allow_html=True)
 
-        if w["blad"]:     sb = '<span class="badge badge-error">Błąd</span>'
-        elif w["wyslano"]:sb = '<span class="badge badge-sent">Wysłano</span>'
-        elif w["wagon"]:  sb = '<span class="badge badge-ok">OK</span>'
-        else:             sb = '<span class="badge badge-warn">Korekta</span>'
+        if w["blad"]:
+            sb = '<span class="badge badge-error">Błąd</span>'
+        elif w["wyslano"]:
+            sb = '<span class="badge badge-sent">Wysłano</span>'
+        elif w["wagon"]:
+            sb = '<span class="badge badge-ok">OK</span>'
+        else:
+            sb = '<span class="badge badge-warn">Korekta</span>'
         rc[7].markdown(f'<div style="padding-top:6px">{sb}</div>', unsafe_allow_html=True)
 
         with rc[8]:
@@ -656,9 +676,10 @@ if wyniki:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---- BATCH WYŚLIJ ----
-    gp3  = [(i, w) for i, w in enumerate(wyniki) if w["wagon"] and not w["wyslano"] and not w["blad"] and w["typ"] == "P3"]
-    gddu = [(i, w) for i, w in enumerate(wyniki) if w["wagon"] and not w["wyslano"] and not w["blad"] and w["typ"] == "DDU"]
+    gp3 = [(i, w) for i, w in enumerate(wyniki) if
+           w["wagon"] and not w["wyslano"] and not w["blad"] and w["typ"] == "P3"]
+    gddu = [(i, w) for i, w in enumerate(wyniki) if
+            w["wagon"] and not w["wyslano"] and not w["blad"] and w["typ"] == "DDU"]
 
     if gp3 or gddu:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -670,8 +691,7 @@ if wyniki:
             if gddu: parts.append(f"{len(gddu)} × DDU")
             lbl = "  +  ".join(parts)
 
-            if st.button(f"🚀  WYŚLIJ DO GOOGLE SHEETS  ·  {lbl}",
-                         type="primary", use_container_width=True):
+            if st.button(f"🚀  WYŚLIJ DO GOOGLE SHEETS  ·  {lbl}", type="primary", use_container_width=True):
                 try:
                     client = get_google_client()
                     n_ok_p3, n_ok_ddu = 0, 0
@@ -681,7 +701,7 @@ if wyniki:
                         lp = 1 if len(sh.col_values(1)) <= 1 else int(sh.col_values(1)[-1]) + 1
                         rows = []
                         for off, (i, w) in enumerate(gp3):
-                            rows.append([lp+off, w["nr_dop"], w["lokalizacja"], w["data"], w["wagon"]])
+                            rows.append([lp + off, w["nr_dop"], w["lokalizacja"], w["data"], w["wagon"]])
                             st.session_state.wyniki[i]["wyslano"] = True
                         sh.append_rows(rows)
                         n_ok_p3 = len(rows)
@@ -691,7 +711,7 @@ if wyniki:
                         lp = 1 if len(sh.col_values(1)) <= 1 else int(sh.col_values(1)[-1]) + 1
                         rows = []
                         for off, (i, w) in enumerate(gddu):
-                            rows.append([lp+off, w["lokalizacja"], w["data"], w["wagon"]])
+                            rows.append([lp + off, w["lokalizacja"], w["data"], w["wagon"]])
                             st.session_state.wyniki[i]["wyslano"] = True
                         sh.append_rows(rows)
                         n_ok_ddu = len(rows)
@@ -710,7 +730,6 @@ if wyniki:
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
-
 # ===========================================================================
 # SEKCJA 3 — PANEL EDYCJI
 # ===========================================================================
@@ -722,7 +741,7 @@ if st.session_state.edytowany_idx is not None and wyniki:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(
             f'<div class="card"><div class="card-header">'
-            f'<span class="ch-icon">✏️</span> Edycja rekordu #{idx+1}'
+            f'<span class="ch-icon">✏️</span> Edycja rekordu #{idx + 1}'
             f'<span style="font-size:.7rem;color:#333;margin-left:12px">{w["filename"]}</span>'
             f'</div>',
             unsafe_allow_html=True,
@@ -731,17 +750,21 @@ if st.session_state.edytowany_idx is not None and wyniki:
         col_img, col_sep, col_form = st.columns([5, 0.1, 4])
 
         with col_img:
-            st.markdown('<div class="section-label" style="color:#333;font-size:.65rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">Podgląd dokumentu</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="section-label" style="color:#333;font-size:.65rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">Podgląd dokumentu</div>',
+                unsafe_allow_html=True)
             if w["podglad_png"]:
                 st.image(w["podglad_png"], use_container_width=True)
-                st.caption(f'Strona {w.get("ddu_strona","?")} z {w.get("n_stron","?")}')
+                st.caption(f'Strona {w.get("ddu_strona", "?")} z {w.get("n_stron", "?")}')
             else:
                 st.warning("Brak podglądu — błąd przetwarzania pliku.")
             with st.expander("🔍 Surowy tekst OCR (diagnostyka)"):
                 st.code(w.get("ocr_tekst", "(brak)"), language=None)
 
         with col_form:
-            st.markdown('<div style="color:#333;font-size:.65rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:16px">Dane do rejestru</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="color:#333;font-size:.65rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:16px">Dane do rejestru</div>',
+                unsafe_allow_html=True)
 
             new_typ = st.selectbox(
                 "Typ dokumentu",
@@ -821,13 +844,12 @@ if st.session_state.edytowany_idx is not None and wyniki:
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-
 # ===========================================================================
 # STOPKA
 # ===========================================================================
 st.markdown("""
 <div class="korcz-footer">
-  KORCZ Serwis Pojazdów Kolejowych &nbsp;·&nbsp; v4.0
+  KORCZ Serwis Pojazdów Kolejowych &nbsp;·&nbsp; v4.5 &nbsp;·&nbsp; OpenCV Enhanced
   &nbsp;&nbsp;|&nbsp;&nbsp;
   <span>P3 → Arkusz Przeglądów</span>
   &nbsp;&nbsp;·&nbsp;&nbsp;
