@@ -14,8 +14,6 @@
 
 <br/>
 
-![KORCZ Screenshot](docs/screenshot_dark.png)
-
 *Tryb ciemny (aurora) · Tryb jasny dostępny jednym kliknięciem*
 
 <br/>
