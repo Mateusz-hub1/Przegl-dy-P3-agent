@@ -1,7 +1,7 @@
 import streamlit as st
 import fitz  # PyMuPDF
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import io
 import re
 import gspread
@@ -21,524 +21,428 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# AURORA CSS — pełny redesign
+# SESSION STATE
 # ---------------------------------------------------------------------------
-st.markdown("""
+if "wyniki"        not in st.session_state: st.session_state.wyniki = []
+if "edytowany_idx" not in st.session_state: st.session_state.edytowany_idx = None
+if "tryb"          not in st.session_state: st.session_state.tryb = "AUTO"
+if "theme"         not in st.session_state: st.session_state.theme = "dark"
+
+# ---------------------------------------------------------------------------
+# CSS — DARK / LIGHT z przełącznikiem
+# ---------------------------------------------------------------------------
+IS_DARK = st.session_state.theme == "dark"
+
+DARK_CSS = """
+  :root {
+    --bg:           #04040a;
+    --bg2:          rgba(255,255,255,.03);
+    --bg3:          rgba(255,255,255,.06);
+    --border:       rgba(255,255,255,.07);
+    --border-hover: rgba(255,255,255,.14);
+    --text-primary: rgba(255,255,255,.92);
+    --text-sec:     rgba(255,255,255,.45);
+    --text-muted:   rgba(255,255,255,.22);
+    --card-top:     linear-gradient(90deg, transparent, rgba(229,0,26,.35), rgba(120,60,255,.25), transparent);
+    --input-bg:     rgba(255,255,255,.04);
+    --input-focus:  rgba(229,0,26,.06);
+    --metric-hover: rgba(229,0,26,.07);
+    --progress-bg:  rgba(255,255,255,.07);
+    --expand-bg:    rgba(255,255,255,.03);
+    --aurora1: rgba(99,51,255,.17);
+    --aurora2: rgba(0,200,255,.11);
+    --aurora3: rgba(229,0,26,.09);
+    --aurora4: rgba(120,40,200,.08);
+  }
+"""
+
+LIGHT_CSS = """
+  :root {
+    --bg:           #f3f2ee;
+    --bg2:          #ffffff;
+    --bg3:          #f7f6f2;
+    --border:       rgba(0,0,0,.08);
+    --border-hover: rgba(0,0,0,.16);
+    --text-primary: #111111;
+    --text-sec:     #555555;
+    --text-muted:   #999999;
+    --card-top:     linear-gradient(90deg, transparent, rgba(229,0,26,.3), rgba(120,60,255,.15), transparent);
+    --input-bg:     #fafaf8;
+    --input-focus:  rgba(229,0,26,.04);
+    --metric-hover: rgba(229,0,26,.04);
+    --progress-bg:  rgba(0,0,0,.07);
+    --expand-bg:    #fafaf8;
+    --aurora1: rgba(99,51,255,.06);
+    --aurora2: rgba(0,180,230,.05);
+    --aurora3: rgba(229,0,26,.04);
+    --aurora4: rgba(120,40,200,.04);
+  }
+"""
+
+THEME_CSS = DARK_CSS if IS_DARK else LIGHT_CSS
+
+st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap');
 
-  /* ═══════════════════════════════════════════
-     RESET & TŁO
-  ═══════════════════════════════════════════ */
-  *, *::before, *::after { box-sizing: border-box; }
+  {THEME_CSS}
 
-  .stApp {
-    background: #04040a;
+  /* ─── RESET & TŁO ─── */
+  *, *::before, *::after {{ box-sizing: border-box; }}
+
+  .stApp {{
+    background: var(--bg) !important;
     font-family: 'Plus Jakarta Sans', sans-serif;
     min-height: 100vh;
-    overflow-x: hidden;
-  }
+  }}
 
-  /* Aurora blob — tło */
-  .stApp::before {
+  /* Aurora — tylko translateY, bez scale (fix rozciągania) */
+  .stApp::before {{
     content: '';
     position: fixed;
-    inset: 0;
+    inset: -10%;
+    width: 120%;
+    height: 120%;
     z-index: 0;
     pointer-events: none;
     background:
-      radial-gradient(ellipse 800px 600px at 15% 10%,  rgba(99,  51,255,.18) 0%, transparent 60%),
-      radial-gradient(ellipse 700px 500px at 90% 20%,  rgba(0, 200,255,.12) 0%, transparent 60%),
-      radial-gradient(ellipse 600px 700px at 50% 80%,  rgba(229,  0, 26,.10) 0%, transparent 60%),
-      radial-gradient(ellipse 900px 400px at 75% 60%,  rgba(120, 40,200,.09) 0%, transparent 55%);
-    animation: aurora-drift 18s ease-in-out infinite alternate;
-  }
+      radial-gradient(ellipse 900px 700px at 15% 15%,  var(--aurora1) 0%, transparent 55%),
+      radial-gradient(ellipse 800px 600px at 88% 20%,  var(--aurora2) 0%, transparent 55%),
+      radial-gradient(ellipse 700px 800px at 50% 85%,  var(--aurora3) 0%, transparent 55%),
+      radial-gradient(ellipse 1000px 500px at 72% 55%, var(--aurora4) 0%, transparent 50%);
+    animation: aurora-drift 20s ease-in-out infinite alternate;
+  }}
 
-  @keyframes aurora-drift {
-    0%   { opacity: 1;   transform: scale(1)    translateY(0px); }
-    33%  { opacity: .85; transform: scale(1.04) translateY(-12px); }
-    66%  { opacity: .9;  transform: scale(.98)  translateY(8px); }
-    100% { opacity: 1;   transform: scale(1.02) translateY(-5px); }
-  }
+  @keyframes aurora-drift {{
+    0%   {{ transform: translateY(0px)   translateX(0px);   }}
+    25%  {{ transform: translateY(-18px) translateX(8px);   }}
+    50%  {{ transform: translateY(-8px)  translateX(-12px); }}
+    75%  {{ transform: translateY(-22px) translateX(5px);   }}
+    100% {{ transform: translateY(-10px) translateX(-6px);  }}
+  }}
 
-  /* Wszystko nad tłem */
-  .stApp > * { position: relative; z-index: 1; }
-  section[data-testid="stMain"] { position: relative; z-index: 1; }
+  section[data-testid="stMain"],
+  section[data-testid="stMain"] > div {{ position: relative; z-index: 1; }}
 
-  header[data-testid="stHeader"]  { background: transparent !important; }
-  #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden; }
-  section[data-testid="stSidebar"] { display: none; }
+  header[data-testid="stHeader"]  {{ background: transparent !important; }}
+  #MainMenu, footer, [data-testid="stToolbar"] {{ visibility: hidden; }}
+  section[data-testid="stSidebar"] {{ display: none; }}
 
-  /* Blok główny */
-  .block-container {
+  .block-container {{
     padding: 2rem 3rem 4rem !important;
-    max-width: 1400px !important;
-  }
+    max-width: 1440px !important;
+  }}
 
-  /* ═══════════════════════════════════════════
-     HEADER
-  ═══════════════════════════════════════════ */
-  .korcz-header {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    padding: 28px 0 24px;
-    margin-bottom: 40px;
-    border-bottom: 1px solid rgba(255,255,255,.06);
+  /* ─── HEADER ─── */
+  .korcz-header {{
+    display: flex; align-items: center; gap: 24px;
+    padding: 26px 0 22px;
+    margin-bottom: 36px;
+    border-bottom: 1px solid var(--border);
     position: relative;
-  }
-
-  .korcz-header::after {
+  }}
+  .korcz-header::after {{
     content: '';
-    position: absolute;
-    bottom: -1px; left: 0;
-    width: 220px; height: 1px;
+    position: absolute; bottom: -1px; left: 0;
+    width: 260px; height: 1px;
     background: linear-gradient(90deg, #e5001a, #ff6b35, transparent);
-  }
-
-  .korcz-brand { font-family: 'Syne', sans-serif; line-height: 1; }
-  .korcz-brand .name {
-    font-size: 2.6rem;
-    font-weight: 800;
-    letter-spacing: 4px;
-    background: linear-gradient(135deg, #ff3a50 0%, #ff7255 50%, #ffaa44 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-  .korcz-brand .tagline {
-    font-size: .72rem;
-    color: rgba(255,255,255,.25);
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    margin-top: 4px;
-    font-weight: 400;
-  }
-
-  .korcz-header-meta {
-    margin-left: auto;
-    text-align: right;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    align-items: flex-end;
-  }
-  .version-tag {
-    font-family: 'Syne', sans-serif;
-    font-size: .62rem;
-    letter-spacing: 3px;
-    color: rgba(255,255,255,.18);
-    text-transform: uppercase;
-  }
-  .status-badge {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+  }}
+  .korcz-brand {{ font-family: 'Syne', sans-serif; line-height: 1; }}
+  .korcz-brand .name {{
+    font-size: 2.5rem; font-weight: 800; letter-spacing: 4px;
+    background: linear-gradient(135deg, #ff3a50 0%, #ff7255 55%, #ffaa44 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }}
+  .korcz-brand .tagline {{
+    font-size: .7rem; color: var(--text-muted);
+    letter-spacing: 4px; text-transform: uppercase; margin-top: 4px;
+  }}
+  .korcz-header-meta {{
+    margin-left: auto; text-align: right;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+  }}
+  .version-tag {{
+    font-family: 'Syne', sans-serif; font-size: .6rem;
+    letter-spacing: 3px; color: var(--text-muted); text-transform: uppercase;
+  }}
+  .status-badge {{
+    display: flex; align-items: center; gap: 6px;
     background: rgba(0,200,100,.07);
     border: 1px solid rgba(0,200,100,.2);
-    border-radius: 20px;
-    padding: 4px 12px;
-  }
-  .status-dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: #00d455;
-    box-shadow: 0 0 8px #00d455, 0 0 16px rgba(0,212,85,.5);
+    border-radius: 20px; padding: 4px 12px;
+  }}
+  .status-dot {{
+    width: 6px; height: 6px; border-radius: 50%; background: #00d455;
+    box-shadow: 0 0 8px #00d455;
     animation: pulse-green 2.5s ease-in-out infinite;
-  }
-  @keyframes pulse-green {
-    0%,100% { box-shadow: 0 0 6px #00d455, 0 0 12px rgba(0,212,85,.4); }
-    50%      { box-shadow: 0 0 12px #00d455, 0 0 24px rgba(0,212,85,.7); }
-  }
-  .status-text {
-    font-size: .7rem;
-    color: #00d455;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    font-family: 'Syne', sans-serif;
-    font-weight: 600;
-  }
+  }}
+  @keyframes pulse-green {{
+    0%,100% {{ box-shadow: 0 0 5px #00d455; }}
+    50%      {{ box-shadow: 0 0 14px #00d455, 0 0 28px rgba(0,212,85,.5); }}
+  }}
+  .status-text {{
+    font-size: .68rem; color: #00d455;
+    letter-spacing: 2px; text-transform: uppercase;
+    font-family: 'Syne', sans-serif; font-weight: 600;
+  }}
 
-  /* ═══════════════════════════════════════════
-     GLASS KARTY
-  ═══════════════════════════════════════════ */
-  .card {
-    background: rgba(255,255,255,.03);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
-    border: 1px solid rgba(255,255,255,.07);
+  /* ─── GLASS KARTY ─── */
+  .card {{
+    background: var(--bg2);
+    border: 1px solid var(--border);
     border-radius: 16px;
     padding: 24px 28px;
     margin-bottom: 20px;
-    position: relative;
-    overflow: hidden;
+    position: relative; overflow: hidden;
     transition: border-color .3s;
-  }
-  .card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent 0%, rgba(229,0,26,.4) 30%, rgba(120,80,255,.3) 60%, transparent 100%);
-  }
-  .card:hover { border-color: rgba(255,255,255,.12); }
+  }}
+  .card::before {{
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: var(--card-top);
+  }}
+  .card:hover {{ border-color: var(--border-hover); }}
+  .card-header {{
+    font-family: 'Syne', sans-serif; font-size: .75rem; font-weight: 700;
+    color: var(--text-muted); letter-spacing: 4px; text-transform: uppercase;
+    margin-bottom: 20px; padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }}
+  .ch-accent {{ color: #e5001a; }}
 
-  .card-header {
-    font-family: 'Syne', sans-serif;
-    font-size: .78rem;
-    font-weight: 700;
-    color: rgba(255,255,255,.35);
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    margin-bottom: 20px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid rgba(255,255,255,.05);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .card-header .ch-accent { color: #e5001a; }
-
-  /* ═══════════════════════════════════════════
-     TRYB BUTTONS
-  ═══════════════════════════════════════════ */
-  .stButton > button {
-    background: rgba(255,255,255,.04) !important;
-    color: rgba(255,255,255,.45) !important;
-    border: 1px solid rgba(255,255,255,.1) !important;
+  /* ─── BUTTONS ─── */
+  .stButton > button {{
+    background: var(--bg3) !important;
+    color: var(--text-sec) !important;
+    border: 1px solid var(--border) !important;
     border-radius: 10px !important;
     font-family: 'Syne', sans-serif !important;
-    font-size: .8rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 2px !important;
-    text-transform: uppercase !important;
+    font-size: .78rem !important; font-weight: 700 !important;
+    letter-spacing: 2px !important; text-transform: uppercase !important;
     padding: 10px 18px !important;
     transition: all .2s ease !important;
-    backdrop-filter: blur(10px) !important;
-  }
-  .stButton > button:hover {
-    background: rgba(229,0,26,.12) !important;
+  }}
+  .stButton > button:hover {{
+    background: rgba(229,0,26,.1) !important;
     border-color: rgba(229,0,26,.4) !important;
-    color: #fff !important;
+    color: var(--text-primary) !important;
     transform: translateY(-1px) !important;
-    box-shadow: 0 4px 20px rgba(229,0,26,.2) !important;
-  }
-  .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, rgba(229,0,26,.7), rgba(180,0,80,.6)) !important;
-    border-color: rgba(229,0,26,.6) !important;
+    box-shadow: 0 4px 16px rgba(229,0,26,.15) !important;
+  }}
+  .stButton > button[kind="primary"] {{
+    background: linear-gradient(135deg, rgba(229,0,26,.75), rgba(170,0,70,.65)) !important;
+    border-color: rgba(229,0,26,.5) !important;
     color: #fff !important;
-    box-shadow: 0 0 20px rgba(229,0,26,.25), inset 0 1px 0 rgba(255,255,255,.1) !important;
-  }
-  .stButton > button[kind="primary"]:hover {
-    background: linear-gradient(135deg, rgba(229,0,26,.9), rgba(200,0,80,.8)) !important;
-    box-shadow: 0 0 30px rgba(229,0,26,.45), 0 4px 20px rgba(229,0,26,.3) !important;
+    box-shadow: 0 0 18px rgba(229,0,26,.2) !important;
+  }}
+  .stButton > button[kind="primary"]:hover {{
+    background: linear-gradient(135deg, #e5001a, #b8003a) !important;
+    box-shadow: 0 0 28px rgba(229,0,26,.4), 0 4px 16px rgba(229,0,26,.25) !important;
     transform: translateY(-2px) !important;
-  }
-
-  /* Przycisk wyślij MEGA */
-  .btn-send > button {
-    background: linear-gradient(135deg, #e5001a 0%, #b8003a 50%, #7b2fff 100%) !important;
-    color: #fff !important;
-    border: none !important;
-    border-radius: 12px !important;
-    font-size: 1rem !important;
-    letter-spacing: 3px !important;
-    padding: 14px 24px !important;
-    box-shadow: 0 0 40px rgba(229,0,26,.3), 0 4px 30px rgba(123,47,255,.25) !important;
-    position: relative !important;
-    overflow: hidden !important;
-  }
-  .btn-send > button::after {
-    content: '' !important;
-    position: absolute !important;
-    inset: 0 !important;
-    background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,.1) 100%) !important;
-  }
-  .btn-send > button:hover {
-    box-shadow: 0 0 60px rgba(229,0,26,.5), 0 8px 40px rgba(123,47,255,.4) !important;
+  }}
+  .btn-send > button {{
+    background: linear-gradient(135deg, #e5001a 0%, #aa0030 45%, #6b20d0 100%) !important;
+    color: #fff !important; border: none !important;
+    border-radius: 12px !important; font-size: .95rem !important;
+    letter-spacing: 3px !important; padding: 14px 24px !important;
+    box-shadow: 0 0 36px rgba(229,0,26,.28), 0 4px 24px rgba(107,32,208,.2) !important;
+  }}
+  .btn-send > button:hover {{
+    box-shadow: 0 0 52px rgba(229,0,26,.45), 0 8px 36px rgba(107,32,208,.35) !important;
     transform: translateY(-2px) scale(1.01) !important;
-  }
-
-  .btn-ghost > button {
+  }}
+  .btn-ghost > button {{
     background: transparent !important;
-    border: 1px solid rgba(255,255,255,.1) !important;
-    color: rgba(255,255,255,.3) !important;
-  }
-  .btn-ghost > button:hover {
-    border-color: rgba(255,80,80,.4) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-muted) !important;
+  }}
+  .btn-ghost > button:hover {{
+    border-color: rgba(255,60,60,.4) !important;
     color: #ff5555 !important;
-    background: rgba(255,0,0,.05) !important;
+    background: rgba(255,0,0,.04) !important;
     box-shadow: none !important;
-  }
+  }}
 
-  /* ═══════════════════════════════════════════
-     FILE UPLOADER
-  ═══════════════════════════════════════════ */
-  [data-testid="stFileUploader"] {
-    background: rgba(255,255,255,.02) !important;
+  /* Theme toggle button */
+  .btn-theme > button {{
+    background: var(--bg3) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-sec) !important;
+    border-radius: 20px !important;
+    font-size: .72rem !important; letter-spacing: 2px !important;
+    padding: 6px 16px !important;
+  }}
+  .btn-theme > button:hover {{
+    border-color: rgba(229,0,26,.3) !important;
+    color: var(--text-primary) !important;
+    background: var(--bg3) !important;
+    transform: none !important;
+    box-shadow: none !important;
+  }}
+
+  /* ─── FILE UPLOADER ─── */
+  [data-testid="stFileUploader"] {{
+    background: var(--input-bg) !important;
     border: 1px dashed rgba(229,0,26,.25) !important;
-    border-radius: 12px !important;
-    padding: 28px !important;
+    border-radius: 12px !important; padding: 28px !important;
     transition: all .3s ease !important;
-  }
-  [data-testid="stFileUploader"]:hover {
-    border-color: rgba(229,0,26,.55) !important;
-    background: rgba(229,0,26,.04) !important;
-    box-shadow: 0 0 30px rgba(229,0,26,.08) inset !important;
-  }
-  [data-testid="stFileUploaderDropzone"] p { color: rgba(255,255,255,.25) !important; }
-  [data-testid="stFileUploaderDropzone"] small { color: rgba(255,255,255,.15) !important; }
+  }}
+  [data-testid="stFileUploader"]:hover {{
+    border-color: rgba(229,0,26,.5) !important;
+    background: var(--input-focus) !important;
+  }}
+  [data-testid="stFileUploaderDropzone"] p  {{ color: var(--text-muted) !important; }}
+  [data-testid="stFileUploaderDropzone"] small {{ color: var(--text-muted) !important; }}
 
-  /* ═══════════════════════════════════════════
-     METRYKI
-  ═══════════════════════════════════════════ */
-  [data-testid="stMetric"] {
-    background: rgba(255,255,255,.03) !important;
-    backdrop-filter: blur(15px) !important;
-    border: 1px solid rgba(255,255,255,.07) !important;
-    border-radius: 12px !important;
-    padding: 20px 22px !important;
-    position: relative !important;
-    overflow: hidden !important;
+  /* ─── METRYKI ─── */
+  [data-testid="stMetric"] {{
+    background: var(--bg2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important; padding: 20px 22px !important;
+    position: relative !important; overflow: hidden !important;
     transition: all .25s ease !important;
-  }
-  [data-testid="stMetric"]:hover {
-    background: rgba(229,0,26,.06) !important;
-    border-color: rgba(229,0,26,.25) !important;
+  }}
+  [data-testid="stMetric"]:hover {{
+    background: var(--metric-hover) !important;
+    border-color: rgba(229,0,26,.22) !important;
     transform: translateY(-2px) !important;
-    box-shadow: 0 8px 30px rgba(229,0,26,.1) !important;
-  }
-  [data-testid="stMetric"]::after {
-    content: '';
-    position: absolute;
-    bottom: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #e5001a, transparent);
-    opacity: .5;
-  }
-  [data-testid="stMetricLabel"] {
-    color: rgba(255,255,255,.3) !important;
-    font-size: .65rem !important;
-    letter-spacing: 3px !important;
-    text-transform: uppercase !important;
-    font-family: 'Syne', sans-serif !important;
-    font-weight: 600 !important;
-  }
-  [data-testid="stMetricValue"] {
-    color: #fff !important;
-    font-family: 'Syne', sans-serif !important;
-    font-size: 2.4rem !important;
-    font-weight: 800 !important;
-    line-height: 1.1 !important;
-  }
+    box-shadow: 0 8px 24px rgba(229,0,26,.08) !important;
+  }}
+  [data-testid="stMetric"]::after {{
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+    height: 2px; background: linear-gradient(90deg, #e5001a, transparent); opacity: .5;
+  }}
+  [data-testid="stMetricLabel"] {{
+    color: var(--text-muted) !important; font-size: .62rem !important;
+    letter-spacing: 3px !important; text-transform: uppercase !important;
+    font-family: 'Syne', sans-serif !important; font-weight: 700 !important;
+  }}
+  [data-testid="stMetricValue"] {{
+    color: var(--text-primary) !important; font-family: 'Syne', sans-serif !important;
+    font-size: 2.3rem !important; font-weight: 800 !important; line-height: 1.1 !important;
+  }}
 
-  /* ═══════════════════════════════════════════
-     BADGES
-  ═══════════════════════════════════════════ */
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-size: .65rem;
-    font-weight: 700;
-    font-family: 'Syne', sans-serif;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-  }
-  .badge::before {
-    content: '';
-    width: 5px; height: 5px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-  .badge-ok    { background: rgba(0,212,85,.1);  color: #00d455; border: 1px solid rgba(0,212,85,.25); }
-  .badge-ok::before { background: #00d455; box-shadow: 0 0 6px #00d455; }
-  .badge-warn  { background: rgba(255,165,0,.1); color: #ffaa33; border: 1px solid rgba(255,165,0,.25); }
-  .badge-warn::before { background: #ffaa33; }
-  .badge-error { background: rgba(255,50,80,.1); color: #ff4060; border: 1px solid rgba(255,50,80,.25); }
-  .badge-error::before { background: #ff4060; box-shadow: 0 0 6px #ff4060; }
-  .badge-sent  { background: rgba(60,140,255,.1); color: #5599ff; border: 1px solid rgba(60,140,255,.25); }
-  .badge-sent::before { background: #5599ff; box-shadow: 0 0 6px #5599ff; }
-  .badge-p3    { background: rgba(80,120,255,.1); color: #88aaff; border: 1px solid rgba(80,120,255,.25); }
-  .badge-p3::before { background: #88aaff; }
-  .badge-ddu   { background: rgba(229,0,26,.1);  color: #ff6680; border: 1px solid rgba(229,0,26,.25); }
-  .badge-ddu::before { background: #ff6680; box-shadow: 0 0 6px rgba(229,0,26,.5); }
+  /* ─── BADGES ─── */
+  .badge {{
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 6px;
+    font-size: .62rem; font-weight: 700;
+    font-family: 'Syne', sans-serif; letter-spacing: 1.5px; text-transform: uppercase;
+  }}
+  .badge::before {{ content: ''; width: 5px; height: 5px; border-radius: 50%; display: inline-block; }}
+  .badge-ok    {{ background: rgba(0,212,85,.1);  color: #00c44d; border: 1px solid rgba(0,212,85,.25); }}
+  .badge-ok::before {{ background: #00d455; box-shadow: 0 0 5px #00d455; }}
+  .badge-warn  {{ background: rgba(255,165,0,.1); color: #e09030; border: 1px solid rgba(255,165,0,.25); }}
+  .badge-warn::before {{ background: #ffaa33; }}
+  .badge-error {{ background: rgba(255,50,80,.1); color: #e03050; border: 1px solid rgba(255,50,80,.25); }}
+  .badge-error::before {{ background: #ff4060; }}
+  .badge-sent  {{ background: rgba(60,140,255,.1); color: #3a7fd5; border: 1px solid rgba(60,140,255,.25); }}
+  .badge-sent::before {{ background: #5599ff; }}
+  .badge-p3    {{ background: rgba(80,120,255,.08); color: #4070cc; border: 1px solid rgba(80,120,255,.2); }}
+  .badge-p3::before {{ background: #88aaff; }}
+  .badge-ddu   {{ background: rgba(229,0,26,.08); color: #c0001a; border: 1px solid rgba(229,0,26,.2); }}
+  .badge-ddu::before {{ background: #ff5566; }}
 
-  /* ═══════════════════════════════════════════
-     TABELA
-  ═══════════════════════════════════════════ */
-  .tbl-row {
-    display: grid;
-    grid-template-columns: 32px 1fr 72px 160px 90px 160px 100px 80px 48px;
-    align-items: center;
-    gap: 0 12px;
-    padding: 12px 6px;
-    border-bottom: 1px solid rgba(255,255,255,.04);
-    transition: background .15s;
-    border-radius: 6px;
-    margin: 0 -6px;
-  }
-  .tbl-row:hover { background: rgba(255,255,255,.03); }
-  .tbl-head {
-    color: rgba(255,255,255,.2) !important;
-    font-size: .6rem !important;
-    letter-spacing: 2.5px;
-    text-transform: uppercase;
-    font-family: 'Syne', sans-serif;
-    font-weight: 700;
-  }
-  .tbl-num  { color: rgba(255,255,255,.18); font-size: .8rem; }
-  .tbl-file { color: rgba(255,255,255,.45); font-size: .75rem; word-break: break-all; line-height: 1.3; }
-  .type-bar-p3  { border-left: 2px solid rgba(136,170,255,.4); padding-left: 8px; }
-  .type-bar-ddu { border-left: 2px solid rgba(229,0,26,.5);    padding-left: 8px; }
-  .wagon-num {
-    font-family: 'Syne', sans-serif;
-    font-size: .95rem;
-    color: #fff;
-    font-weight: 700;
-    letter-spacing: 1px;
-  }
-  .tbl-meta    { color: rgba(255,255,255,.35); font-size: .78rem; }
-  .tbl-meta-hi { color: rgba(255,255,255,.55); font-size: .78rem; }
+  /* ─── TABELA ─── */
+  .tbl-head {{
+    color: var(--text-muted) !important; font-size: .58rem !important;
+    letter-spacing: 2.5px; text-transform: uppercase;
+    font-family: 'Syne', sans-serif; font-weight: 700;
+  }}
+  .tbl-num  {{ color: var(--text-muted); font-size: .8rem; }}
+  .tbl-file {{ color: var(--text-sec); font-size: .74rem; word-break: break-all; line-height: 1.3; }}
+  .type-bar-p3  {{ border-left: 2px solid rgba(100,140,255,.5); padding-left: 8px; }}
+  .type-bar-ddu {{ border-left: 2px solid rgba(229,0,26,.55); padding-left: 8px; }}
+  .wagon-num {{ font-family: 'Syne', sans-serif; font-size: .9rem; color: var(--text-primary); font-weight: 700; letter-spacing: 1px; }}
+  .tbl-meta    {{ color: var(--text-sec);  font-size: .76rem; }}
+  .tbl-meta-hi {{ color: var(--text-primary); font-size: .76rem; }}
 
-  /* ═══════════════════════════════════════════
-     INPUTS
-  ═══════════════════════════════════════════ */
-  .stTextInput > label, .stSelectbox > label {
-    color: rgba(255,255,255,.3) !important;
-    font-size: .65rem !important;
-    letter-spacing: 3px !important;
-    text-transform: uppercase !important;
-    font-family: 'Syne', sans-serif !important;
-    font-weight: 600 !important;
-  }
-  .stTextInput > div > div > input {
-    background: rgba(255,255,255,.04) !important;
-    border: 1px solid rgba(255,255,255,.1) !important;
-    color: rgba(255,255,255,.9) !important;
+  /* ─── INPUTS ─── */
+  .stTextInput > label, .stSelectbox > label {{
+    color: var(--text-muted) !important; font-size: .62rem !important;
+    letter-spacing: 3px !important; text-transform: uppercase !important;
+    font-family: 'Syne', sans-serif !important; font-weight: 700 !important;
+  }}
+  .stTextInput > div > div > input {{
+    background: var(--input-bg) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-primary) !important;
     border-radius: 8px !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-size: .92rem !important;
-    padding: 10px 14px !important;
-    transition: all .2s !important;
-    backdrop-filter: blur(10px) !important;
-  }
-  .stTextInput > div > div > input:focus {
-    border-color: rgba(229,0,26,.6) !important;
-    box-shadow: 0 0 0 3px rgba(229,0,26,.1), 0 0 20px rgba(229,0,26,.15) !important;
-    background: rgba(229,0,26,.04) !important;
-  }
-  .stSelectbox > div > div {
-    background: rgba(255,255,255,.04) !important;
-    border: 1px solid rgba(255,255,255,.1) !important;
-    color: rgba(255,255,255,.85) !important;
+    font-size: .9rem !important; padding: 10px 14px !important;
+  }}
+  .stTextInput > div > div > input:focus {{
+    border-color: rgba(229,0,26,.55) !important;
+    box-shadow: 0 0 0 3px rgba(229,0,26,.08) !important;
+    background: var(--input-focus) !important;
+  }}
+  .stSelectbox > div > div {{
+    background: var(--input-bg) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-primary) !important;
     border-radius: 8px !important;
-    backdrop-filter: blur(10px) !important;
-  }
+  }}
 
-  /* ═══════════════════════════════════════════
-     PROGRESS
-  ═══════════════════════════════════════════ */
-  .stProgress > div > div > div {
-    background: linear-gradient(90deg, #e5001a, #ff4060, #b8003a) !important;
+  /* ─── PROGRESS ─── */
+  .stProgress > div > div > div {{
+    background: linear-gradient(90deg, #e5001a, #ff4060) !important;
     border-radius: 3px !important;
-    box-shadow: 0 0 12px rgba(229,0,26,.5) !important;
-  }
-  .stProgress > div > div {
-    background: rgba(255,255,255,.06) !important;
-    border-radius: 3px !important;
-  }
+    box-shadow: 0 0 10px rgba(229,0,26,.45) !important;
+  }}
+  .stProgress > div > div {{
+    background: var(--progress-bg) !important; border-radius: 3px !important;
+  }}
 
-  /* ═══════════════════════════════════════════
-     EXPANDER
-  ═══════════════════════════════════════════ */
-  .streamlit-expanderHeader {
-    background: rgba(255,255,255,.03) !important;
-    color: rgba(255,255,255,.3) !important;
-    font-size: .75rem !important;
-    border-radius: 8px !important;
-    border: 1px solid rgba(255,255,255,.07) !important;
+  /* ─── EXPANDER ─── */
+  .streamlit-expanderHeader {{
+    background: var(--expand-bg) !important; color: var(--text-muted) !important;
+    font-size: .74rem !important; border-radius: 8px !important;
+    border: 1px solid var(--border) !important;
     font-family: 'Syne', sans-serif !important;
-  }
-  .streamlit-expanderContent {
-    background: rgba(0,0,0,.3) !important;
-    border-radius: 0 0 8px 8px !important;
-  }
+  }}
+  .streamlit-expanderContent {{
+    background: var(--input-bg) !important;
+  }}
 
-  /* ═══════════════════════════════════════════
-     ALERTY
-  ═══════════════════════════════════════════ */
-  .stAlert { border-radius: 10px !important; backdrop-filter: blur(10px) !important; }
-  [data-baseweb="notification"] {
-    background: rgba(0,212,85,.07) !important;
+  /* ─── ALERTY ─── */
+  .stAlert {{ border-radius: 10px !important; }}
+  [data-baseweb="notification"] {{
+    background: rgba(0,212,85,.06) !important;
     border-left: 3px solid #00d455 !important;
     border-radius: 10px !important;
-  }
+  }}
 
-  /* ═══════════════════════════════════════════
-     INFO BOX
-  ═══════════════════════════════════════════ */
-  .info-box {
-    background: rgba(255,255,255,.03);
-    border: 1px solid rgba(255,255,255,.07);
-    border-radius: 10px;
-    padding: 14px 18px;
-    margin: 12px 0;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: .82rem;
-    color: rgba(255,255,255,.4);
-    backdrop-filter: blur(10px);
-  }
-  .ib-icon { font-size: 1rem; }
+  /* ─── INFO BOX ─── */
+  .info-box {{
+    background: var(--bg3);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 18px; margin: 10px 0;
+    display: flex; align-items: center; gap: 12px;
+    font-size: .8rem; color: var(--text-sec);
+  }}
 
-  /* ═══════════════════════════════════════════
-     SEPARATOR
-  ═══════════════════════════════════════════ */
-  hr {
-    border: none !important;
-    border-top: 1px solid rgba(255,255,255,.04) !important;
-    margin: 6px 0 !important;
-  }
+  /* ─── SEPARATOR ─── */
+  hr {{ border: none !important; border-top: 1px solid var(--border) !important; margin: 6px 0 !important; }}
 
-  /* ═══════════════════════════════════════════
-     SEKCJA EDYCJI — panel boczny obrazu
-  ═══════════════════════════════════════════ */
-  .edit-panel-label {
-    font-family: 'Syne', sans-serif;
-    font-size: .6rem;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,.2);
-    margin-bottom: 10px;
-  }
+  /* ─── EDIT LABEL ─── */
+  .edit-lbl {{
+    font-family: 'Syne', sans-serif; font-size: .58rem;
+    letter-spacing: 3px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 10px;
+  }}
 
-  /* ═══════════════════════════════════════════
-     STOPKA
-  ═══════════════════════════════════════════ */
-  .korcz-footer {
-    text-align: center;
-    margin-top: 56px;
-    padding-top: 24px;
-    border-top: 1px solid rgba(255,255,255,.05);
-    font-family: 'Syne', sans-serif;
-    font-size: .6rem;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,.1);
-  }
-  .korcz-footer span { color: rgba(229,0,26,.4); }
+  /* ─── FOOTER ─── */
+  .korcz-footer {{
+    text-align: center; margin-top: 56px; padding-top: 22px;
+    border-top: 1px solid var(--border);
+    font-family: 'Syne', sans-serif; font-size: .58rem;
+    letter-spacing: 3px; text-transform: uppercase; color: var(--text-muted);
+  }}
+  .korcz-footer span {{ color: rgba(229,0,26,.5); }}
 
-  /* ═══════════════════════════════════════════
-     SCROLLBAR
-  ═══════════════════════════════════════════ */
-  ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(229,0,26,.3); border-radius: 2px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(229,0,26,.6); }
+  /* ─── SCROLLBAR ─── */
+  ::-webkit-scrollbar {{ width: 4px; }}
+  ::-webkit-scrollbar-track {{ background: transparent; }}
+  ::-webkit-scrollbar-thumb {{ background: rgba(229,0,26,.3); border-radius: 2px; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -551,26 +455,37 @@ def get_logo_html() -> str:
     try:
         with open(LOGO_PATH, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        return f'<img src="data:image/png;base64,{b64}" style="height:56px;opacity:.9;filter:drop-shadow(0 0 12px rgba(229,0,26,.3));">'
+        return f'<img src="data:image/png;base64,{b64}" style="height:54px;opacity:.92;filter:drop-shadow(0 0 10px rgba(229,0,26,.25));">'
     except Exception:
-        return '<div style="font-size:2.2rem;filter:drop-shadow(0 0 10px rgba(229,0,26,.4))">🚂</div>'
+        return '<div style="font-size:2rem;">🚂</div>'
 
-st.markdown(f"""
-<div class="korcz-header">
-  {get_logo_html()}
-  <div class="korcz-brand">
-    <div class="name">KORCZ</div>
-    <div class="tagline">System Skanowania Dokumentów Kolejowych</div>
-  </div>
-  <div class="korcz-header-meta">
-    <div class="version-tag">v5.0 &nbsp;·&nbsp; DDU / P3 / Mw 581</div>
-    <div class="status-badge">
-      <div class="status-dot"></div>
-      <span class="status-text">Online</span>
+header_c1, header_c2 = st.columns([10, 1])
+with header_c1:
+    st.markdown(f"""
+    <div class="korcz-header">
+      {get_logo_html()}
+      <div class="korcz-brand">
+        <div class="name">KORCZ</div>
+        <div class="tagline">System Skanowania Dokumentów Kolejowych</div>
+      </div>
+      <div class="korcz-header-meta">
+        <div class="version-tag">v6.0 &nbsp;·&nbsp; DDU / P3 / Mw 581</div>
+        <div class="status-badge">
+          <div class="status-dot"></div>
+          <span class="status-text">Online</span>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+with header_c2:
+    icon = "☀️" if IS_DARK else "🌙"
+    label = f"{icon} {'Jasny' if IS_DARK else 'Ciemny'}"
+    st.markdown('<div class="btn-theme">', unsafe_allow_html=True)
+    if st.button(label, key="theme_toggle"):
+        st.session_state.theme = "light" if IS_DARK else "dark"
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # GOOGLE SHEETS
@@ -593,7 +508,8 @@ def get_google_client():
 # ROZPOZNANIE TYPU
 # ===========================================================================
 SLOWA_P3 = [
-    "PROTOKÓŁ P6", "PROTOKOL P6", "DOPUSZCZENIE DO UŻYTKOWANIA WAGONU TOWAROWEGO",
+    "PROTOKÓŁ P6", "PROTOKOL P6",
+    "DOPUSZCZENIE DO UŻYTKOWANIA WAGONU TOWAROWEGO",
     "PRZEGLĄD P3", "PRZEGLAD P3",
 ]
 SLOWA_DDU = [
@@ -632,7 +548,6 @@ def _znajdz_wagony_raw(text: str) -> list:
     for m in re.finditer(r"\b(\d[\d\s\-\.]{9,16}\d)\b", text_c):
         raw = re.sub(r"\D", "", m.group(1))
         if len(raw) == 12 and raw not in seen:
-            # Odrzuć numery telefonów
             if raw[:2] in ("48",) or raw[:3] in ("881", "882", "535", "538"):
                 continue
             seen.add(raw)
@@ -704,28 +619,92 @@ def lokalizacja(text: str) -> str:
 
 
 # ===========================================================================
-# OBSŁUGA PLIKÓW — PDF i obrazy (JPG/PNG)
-# POPRAWA: lepsza obsługa błędów OCR + bardziej agresywne preprocessing
+# NOWA LOGIKA — OCENIANIE STRON (score-based, nie break-on-first)
 # ===========================================================================
-SUPPORTED_TYPES = ["pdf", "jpg", "jpeg", "png"]
+
+# Słownik: słowo_kluczowe → punkty
+# Wyższy score = bardziej pasuje do strony DDU/P6
+SCORE_P6 = {
+    "DOPUSZCZENIE DO UŻYTKOWANIA": 30,
+    "DOPUSZCZENIE DO UZYTKOWANIA": 30,
+    "PROTOKÓŁ P6":  25,
+    "PROTOKOL P6":  25,
+    "PRZEGLĄD P3":  20,
+    "PRZEGLAD P3":  20,
+    " P6 ":         10,
+    "WAGONU TOWAROWEGO": 8,
+    "DOPUSZCZENIE": 6,
+}
+
+# Strony z tymi słowami NIE są stroną P6
+SCORE_PENALTY = {
+    "ZAWIADOMIENIE O NAPRAWIE": -20,
+    "PROTOKÓŁ ODBIORU":         -15,
+    "PROTOKOL ODBIORU":         -15,
+    "MW 581":                   -15,
+    "SPIS WAGONÓW":             -10,
+    "SPIS WAGONOW":             -10,
+    "LISTA WAGONÓW":            -10,
+    "NAPRAWA POZIOMU P":        -8,
+    " P2 ":                     -5,
+    " P1 ":                     -3,
+}
+
+def _score_strony_p6(text: str) -> int:
+    """Zwraca wynik dopasowania strony do dokumentu DDU/P6."""
+    upper = text.upper()
+    score = 0
+    for kw, pts in SCORE_P6.items():
+        if kw.upper() in upper:
+            score += pts
+    for kw, pts in SCORE_PENALTY.items():
+        if kw.upper() in upper:
+            score += pts  # pts są ujemne
+    return score
+
 
 def ocr_z_obrazu(img: Image.Image) -> str:
-    """OCR z obiektu PIL Image — wspólna ścieżka dla obrazów i stron PDF."""
+    """OCR z obiektu PIL Image."""
     img_gray = img.convert("L")
     w, h = img_gray.size
-    # Skalowanie do min. 2400px szerokości
     if w < 2400:
         scale = 2400 / w
         img_gray = img_gray.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    # Poprawa kontrastu + lekkie wyostrzenie
     img_gray = ImageEnhance.Contrast(img_gray).enhance(1.9)
     img_gray = ImageEnhance.Sharpness(img_gray).enhance(1.5)
     return pytesseract.image_to_string(img_gray, lang="pol", config="--psm 6 --oem 1")
 
+
+def _znajdz_strone_p6(doc: fitz.Document) -> int:
+    """
+    Skanuje WSZYSTKIE strony i wybiera tę z najwyższym score P6.
+    Używa 150 DPI dla detekcji (dobry balans jakość/szybkość).
+    Fallback: ostatnia strona.
+    """
+    n = len(doc)
+    if n == 1:
+        return 0
+
+    najlepszy_idx   = n - 1   # fallback = ostatnia strona
+    najlepszy_score = -999
+
+    for i in range(n):
+        pix = doc[i].get_pixmap(dpi=150)
+        img = Image.open(io.BytesIO(pix.tobytes()))
+        tekst = pytesseract.image_to_string(img, lang="pol", config="--psm 6 --oem 1")
+        score = _score_strony_p6(tekst)
+
+        if score > najlepszy_score:
+            najlepszy_score = score
+            najlepszy_idx   = i
+
+    return najlepszy_idx
+
+
 def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list:
     """
     Obsługuje PDF, JPG, PNG.
-    Zwraca listę rekordów — jeden lub wiele w zależności od typu dokumentu.
+    Zwraca listę rekordów.
     """
     ext = Path(filename).suffix.lower().lstrip(".")
 
@@ -733,32 +712,23 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         n_stron = len(doc)
 
-        # Znajdź stronę DDU (od końca)
-        ddu_idx = len(doc) - 1
-        if n_stron > 1:
-            for i in range(n_stron - 1, max(n_stron - 9, -1), -1):
-                pix = doc[i].get_pixmap(dpi=100)
-                img_q = Image.open(io.BytesIO(pix.tobytes()))
-                t = pytesseract.image_to_string(img_q, lang="pol").upper()
-                if "DOPUSZCZENIE" in t or ("PROTOKÓŁ" in t and "P6" in t):
-                    ddu_idx = i
-                    break
+        # Nowa logika — score-based selection
+        p6_idx = _znajdz_strone_p6(doc)
 
         # Podgląd 150 DPI
-        pix_prev = doc[ddu_idx].get_pixmap(dpi=150)
-        podglad = pix_prev.tobytes("png")
+        pix_prev = doc[p6_idx].get_pixmap(dpi=150)
+        podglad  = pix_prev.tobytes("png")
 
         # OCR 300 DPI
-        pix_ocr = doc[ddu_idx].get_pixmap(dpi=300)
+        pix_ocr = doc[p6_idx].get_pixmap(dpi=300)
         img_ocr = Image.open(io.BytesIO(pix_ocr.tobytes()))
-        tekst = ocr_z_obrazu(img_ocr)
+        tekst   = ocr_z_obrazu(img_ocr)
         doc.close()
 
-        meta = dict(ddu_strona=ddu_idx + 1, n_stron=n_stron)
+        meta = dict(ddu_strona=p6_idx + 1, n_stron=n_stron)
 
     else:
         img_raw = Image.open(io.BytesIO(file_bytes))
-
         img_prev = img_raw.copy()
         if img_prev.width > 1200:
             r = 1200 / img_prev.width
@@ -766,9 +736,8 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
         buf = io.BytesIO()
         img_prev.convert("RGB").save(buf, format="PNG")
         podglad = buf.getvalue()
-
-        tekst = ocr_z_obrazu(img_raw)
-        meta = dict(ddu_strona=1, n_stron=1)
+        tekst   = ocr_z_obrazu(img_raw)
+        meta    = dict(ddu_strona=1, n_stron=1)
 
     typ = tryb if tryb != "AUTO" else wykryj_typ(tekst)
     dat = data_doku(tekst)
@@ -797,14 +766,6 @@ def przetworz_plik(file_bytes: bytes, filename: str, tryb: str = "AUTO") -> list
 
 
 # ===========================================================================
-# SESSION STATE
-# ===========================================================================
-if "wyniki"        not in st.session_state: st.session_state.wyniki = []
-if "edytowany_idx" not in st.session_state: st.session_state.edytowany_idx = None
-if "tryb"          not in st.session_state: st.session_state.tryb = "AUTO"
-
-
-# ===========================================================================
 # SEKCJA 1 — TRYB + UPLOAD
 # ===========================================================================
 st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -825,21 +786,21 @@ with c3:
         st.session_state.tryb = "DDU"; st.rerun()
 
 TRYB_INFO = {
-    "AUTO": ("🔍", "rgba(136,170,255,.8)", "Automatyczne wykrywanie — program sam rozpozna typ dokumentu na podstawie treści."),
-    "P3":   ("📋", "rgba(136,170,255,.8)", "Tryb Przegląd P3 — jeden wagon na plik, zapis do arkusza P3."),
-    "DDU":  ("🔧", "#ff6680", "Tryb DDU / Mw 581 / P1·P2 — wyciąga wszystkie wagony z tabeli, zapis do arkusza DDU."),
+    "AUTO": ("🔍", "#7090ee", "Automatyczne wykrywanie — program sam rozpozna typ dokumentu na podstawie treści."),
+    "P3":   ("📋", "#7090ee", "Tryb Przegląd P3 — jeden wagon na plik, zapis do arkusza P3."),
+    "DDU":  ("🔧", "#e5001a", "Tryb DDU / Mw 581 / P1·P2 — wyciąga wszystkie wagony z tabeli, zapis do arkusza DDU."),
 }
 ic, col, opis = TRYB_INFO[st.session_state.tryb]
 st.markdown(
-    f'<div class="info-box"><span class="ib-icon">{ic}</span>'
-    f'<span style="color:{col};font-family:Syne,sans-serif;font-weight:700;font-size:.75rem;letter-spacing:2px">TRYB {st.session_state.tryb}</span>'
-    f'&nbsp;&nbsp;<span style="color:rgba(255,255,255,.35)">{opis}</span></div>',
+    f'<div class="info-box"><span>{ic}</span>'
+    f'<span style="color:{col};font-family:Syne,sans-serif;font-weight:700;font-size:.72rem;letter-spacing:2px">TRYB {st.session_state.tryb}</span>'
+    f'&nbsp;&nbsp;<span>{opis}</span></div>',
     unsafe_allow_html=True,
 )
 
 uploaded_files = st.file_uploader(
     "Przeciągnij pliki lub kliknij — PDF, JPG, PNG",
-    type=SUPPORTED_TYPES,
+    type=["pdf", "jpg", "jpeg", "png"],
     accept_multiple_files=True,
     label_visibility="collapsed",
 )
@@ -853,25 +814,18 @@ if uploaded_files:
     if nowe:
         prog_bar = st.progress(0, text="Inicjalizacja…")
         for i, plik in enumerate(nowe):
-            prog_bar.progress(
-                i / len(nowe),
-                text=f"⚙️  OCR: {plik.name}  ({i+1}/{len(nowe)})",
-            )
+            prog_bar.progress(i / len(nowe), text=f"⚙️  OCR: {plik.name}  ({i+1}/{len(nowe)})")
             try:
                 rekordy = przetworz_plik(plik.read(), plik.name, st.session_state.tryb)
                 st.session_state.wyniki.extend(rekordy)
             except Exception as e:
                 st.session_state.wyniki.append(dict(
-                    filename=plik.name, typ="?",
-                    wagon="", nr_dop="", data="", lokalizacja="",
-                    ddu_strona=0, n_stron=0,
-                    podglad_png=None, ocr_tekst="",
+                    filename=plik.name, typ="?", wagon="", nr_dop="", data="", lokalizacja="",
+                    ddu_strona=0, n_stron=0, podglad_png=None, ocr_tekst="",
                     wyslano=False, blad=str(e),
                 ))
-            time.sleep(0.03)
-
         prog_bar.progress(1.0, text="✅  Gotowe!")
-        time.sleep(0.6)
+        time.sleep(0.5)
         prog_bar.empty()
         st.rerun()
 
@@ -882,11 +836,11 @@ if uploaded_files:
 wyniki = st.session_state.wyniki
 
 if wyniki:
-    n_p3  = sum(1 for w in wyniki if w["typ"] == "P3")
-    n_ddu = sum(1 for w in wyniki if w["typ"] == "DDU")
-    n_ok  = sum(1 for w in wyniki if w["wagon"] and not w["blad"])
-    n_prob= sum(1 for w in wyniki if not w["wagon"] or w["blad"])
-    n_wys = sum(1 for w in wyniki if w["wyslano"])
+    n_p3   = sum(1 for w in wyniki if w["typ"] == "P3")
+    n_ddu  = sum(1 for w in wyniki if w["typ"] == "DDU")
+    n_ok   = sum(1 for w in wyniki if w["wagon"] and not w["blad"])
+    n_prob = sum(1 for w in wyniki if not w["wagon"] or w["blad"])
+    n_wys  = sum(1 for w in wyniki if w["wyslano"])
 
     mc = st.columns(6)
     mc[0].metric("Rekordów",  len(wyniki))
@@ -898,7 +852,6 @@ if wyniki:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ---- TABELA ----
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="card-header"><span class="ch-accent">◈</span> &nbsp;Wyniki skanowania</div>', unsafe_allow_html=True)
 
@@ -909,30 +862,23 @@ if wyniki:
 
     for idx, w in enumerate(wyniki):
         rc = st.columns([0.3, 1.8, 0.6, 1.5, 0.95, 1.55, 1.0, 0.8, 0.6])
-
         rc[0].markdown(f'<div class="tbl-num" style="padding-top:8px">{idx+1}</div>', unsafe_allow_html=True)
-
         bar = "type-bar-p3" if w["typ"] == "P3" else "type-bar-ddu"
         rc[1].markdown(f'<div class="{bar} tbl-file" style="padding-top:6px">{w["filename"]}</div>', unsafe_allow_html=True)
-
         tb = '<span class="badge badge-p3">P3</span>' if w["typ"] == "P3" else '<span class="badge badge-ddu">DDU</span>'
         rc[2].markdown(f'<div style="padding-top:6px">{tb}</div>', unsafe_allow_html=True)
-
         rc[3].markdown(f'<div class="wagon-num" style="padding-top:6px">{w["wagon"] or "—"}</div>', unsafe_allow_html=True)
         rc[4].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["nr_dop"] or "—"}</div>', unsafe_allow_html=True)
         rc[5].markdown(f'<div class="tbl-meta-hi" style="padding-top:8px">{w["lokalizacja"] or "—"}</div>', unsafe_allow_html=True)
         rc[6].markdown(f'<div class="tbl-meta" style="padding-top:8px">{w["data"] or "—"}</div>', unsafe_allow_html=True)
-
         if w["blad"]:      sb = '<span class="badge badge-error">Błąd</span>'
         elif w["wyslano"]: sb = '<span class="badge badge-sent">Wysłano</span>'
         elif w["wagon"]:   sb = '<span class="badge badge-ok">OK</span>'
         else:              sb = '<span class="badge badge-warn">Korekta</span>'
         rc[7].markdown(f'<div style="padding-top:6px">{sb}</div>', unsafe_allow_html=True)
-
         with rc[8]:
             if st.button("✏️", key=f"e{idx}", help="Edytuj / wyślij"):
                 st.session_state.edytowany_idx = idx
-
         st.markdown("<hr>", unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -944,20 +890,16 @@ if wyniki:
     if gp3 or gddu:
         st.markdown("<br>", unsafe_allow_html=True)
         cs, cc = st.columns([4, 1])
-
         with cs:
             parts = []
             if gp3:  parts.append(f"{len(gp3)} × P3")
             if gddu: parts.append(f"{len(gddu)} × DDU")
             lbl = "  +  ".join(parts)
-
             st.markdown('<div class="btn-send">', unsafe_allow_html=True)
-            if st.button(f"🚀  WYŚLIJ DO GOOGLE SHEETS  ·  {lbl}",
-                         type="primary", use_container_width=True):
+            if st.button(f"🚀  WYŚLIJ DO GOOGLE SHEETS  ·  {lbl}", type="primary", use_container_width=True):
                 try:
                     client = get_google_client()
                     n_ok_p3, n_ok_ddu = 0, 0
-
                     if gp3 and ARKUSZ_P3_URL:
                         sh = client.open_by_url(ARKUSZ_P3_URL).sheet1
                         lp = 1 if len(sh.col_values(1)) <= 1 else int(sh.col_values(1)[-1]) + 1
@@ -967,7 +909,6 @@ if wyniki:
                             st.session_state.wyniki[i]["wyslano"] = True
                         sh.append_rows(rows)
                         n_ok_p3 = len(rows)
-
                     if gddu and ARKUSZ_DDU_URL:
                         sh = client.open_by_url(ARKUSZ_DDU_URL).sheet1
                         lp = 1 if len(sh.col_values(1)) <= 1 else int(sh.col_values(1)[-1]) + 1
@@ -977,14 +918,12 @@ if wyniki:
                             st.session_state.wyniki[i]["wyslano"] = True
                         sh.append_rows(rows)
                         n_ok_ddu = len(rows)
-
-                    st.success(f"✅  Zapisano {n_ok_p3} wpisów P3 i {n_ok_ddu} wpisów DDU do Google Sheets.")
+                    st.success(f"✅  Zapisano {n_ok_p3} wpisów P3 i {n_ok_ddu} wpisów DDU.")
                     st.balloons()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌  Błąd połączenia z Google Sheets: {e}")
+                    st.error(f"❌  Błąd Google Sheets: {e}")
             st.markdown('</div>', unsafe_allow_html=True)
-
         with cc:
             st.markdown('<div class="btn-ghost">', unsafe_allow_html=True)
             if st.button("🗑  Wyczyść", use_container_width=True):
@@ -1001,77 +940,47 @@ if st.session_state.edytowany_idx is not None and wyniki:
     idx = st.session_state.edytowany_idx
     if idx < len(wyniki):
         w = wyniki[idx]
-
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(
             f'<div class="card"><div class="card-header">'
-            f'<span class="ch-accent">◈</span> &nbsp;Edycja rekordu #{idx+1}'
-            f'<span style="font-size:.65rem;color:rgba(255,255,255,.18);margin-left:14px;font-family:Plus Jakarta Sans">{w["filename"]}</span>'
-            f'</div>',
-            unsafe_allow_html=True,
+            f'<span class="ch-accent">◈</span> &nbsp;Edycja #{idx+1}'
+            f'<span style="font-size:.6rem;color:var(--text-muted);margin-left:14px">{w["filename"]}</span>'
+            f'</div>', unsafe_allow_html=True,
         )
-
-        col_img, col_sep, col_form = st.columns([5, 0.1, 4])
-
+        col_img, _, col_form = st.columns([5, 0.1, 4])
         with col_img:
-            st.markdown('<div class="edit-panel-label">Podgląd dokumentu</div>', unsafe_allow_html=True)
+            st.markdown('<div class="edit-lbl">Podgląd dokumentu</div>', unsafe_allow_html=True)
             if w["podglad_png"]:
                 st.image(w["podglad_png"], use_container_width=True)
-                st.caption(f'Strona {w.get("ddu_strona","?")} z {w.get("n_stron","?")}')
+                st.caption(f'Strona {w.get("ddu_strona","?")} / {w.get("n_stron","?")}')
             else:
-                st.warning("Brak podglądu — błąd przetwarzania pliku.")
+                st.warning("Brak podglądu.")
             with st.expander("🔍 Surowy tekst OCR"):
                 st.code(w.get("ocr_tekst", "(brak)"), language=None)
-
         with col_form:
-            st.markdown('<div class="edit-panel-label">Dane do rejestru</div>', unsafe_allow_html=True)
-
-            new_typ = st.selectbox(
-                "Typ dokumentu",
-                ["P3", "DDU"],
-                index=0 if w["typ"] == "P3" else 1,
-                key=f"sel_{idx}",
-            )
-            wagon_v = st.text_input(
-                "Numer wagonu  ✱",
-                value=w["wagon"],
-                placeholder="np.  3351 6666 408-6",
-                key=f"wg_{idx}",
-            )
+            st.markdown('<div class="edit-lbl">Dane do rejestru</div>', unsafe_allow_html=True)
+            new_typ = st.selectbox("Typ dokumentu", ["P3", "DDU"],
+                                   index=0 if w["typ"] == "P3" else 1, key=f"sel_{idx}")
+            wagon_v = st.text_input("Numer wagonu  ✱", value=w["wagon"],
+                                    placeholder="np.  3351 6666 408-6", key=f"wg_{idx}")
             nrdop_v = ""
             if new_typ == "P3":
-                nrdop_v = st.text_input(
-                    "Numer dopuszczenia",
-                    value=w["nr_dop"],
-                    placeholder="np.  17044086",
-                    key=f"nd_{idx}",
-                )
-            data_v = st.text_input(
-                "Data wystawienia",
-                value=w["data"],
-                placeholder="DD.MM.RRRR",
-                key=f"dt_{idx}",
-            )
-            lok_v = st.text_input(
-                "Miejscowość / Zakład",
-                value=w["lokalizacja"],
-                placeholder="np.  KWK Janina",
-                key=f"lk_{idx}",
-            )
-
+                nrdop_v = st.text_input("Numer dopuszczenia", value=w["nr_dop"],
+                                        placeholder="np.  17044086", key=f"nd_{idx}")
+            data_v = st.text_input("Data wystawienia", value=w["data"],
+                                   placeholder="DD.MM.RRRR", key=f"dt_{idx}")
+            lok_v  = st.text_input("Miejscowość / Zakład", value=w["lokalizacja"],
+                                   placeholder="np.  KWK Janina", key=f"lk_{idx}")
             st.markdown("<br>", unsafe_allow_html=True)
             b1, b2, b3 = st.columns([2, 2, 1])
-
             with b1:
-                if st.button("💾  Zapisz zmiany", key=f"sv_{idx}", use_container_width=True):
+                if st.button("💾  Zapisz", key=f"sv_{idx}", use_container_width=True):
                     st.session_state.wyniki[idx].update(
                         typ=new_typ, wagon=wagon_v, nr_dop=nrdop_v,
-                        data=data_v, lokalizacja=lok_v, blad="",
-                    )
-                    st.success("Zmiany zapisane.")
-
+                        data=data_v, lokalizacja=lok_v, blad="")
+                    st.success("Zapisano.")
             with b2:
-                if st.button("✅  Wyślij ten wpis", key=f"sn_{idx}",
+                if st.button("✅  Wyślij wpis", key=f"sn_{idx}",
                              use_container_width=True, type="primary"):
                     if not wagon_v.strip():
                         st.error("❌  Numer wagonu jest wymagany.")
@@ -1086,22 +995,19 @@ if st.session_state.edytowany_idx is not None and wyniki:
                             sh.append_rows([row])
                             st.session_state.wyniki[idx].update(
                                 typ=new_typ, wagon=wagon_v, nr_dop=nrdop_v,
-                                data=data_v, lokalizacja=lok_v, wyslano=True, blad="",
-                            )
-                            st.success(f"✅  LP={lp} → arkusz {new_typ}")
+                                data=data_v, lokalizacja=lok_v, wyslano=True, blad="")
+                            st.success(f"✅  LP={lp} → {new_typ}")
                             st.balloons()
                             st.session_state.edytowany_idx = None
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌  {e}")
-
             with b3:
                 st.markdown('<div class="btn-ghost">', unsafe_allow_html=True)
                 if st.button("✖", key=f"cl_{idx}", use_container_width=True):
                     st.session_state.edytowany_idx = None
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
-
         st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -1110,7 +1016,7 @@ if st.session_state.edytowany_idx is not None and wyniki:
 # ===========================================================================
 st.markdown("""
 <div class="korcz-footer">
-  KORCZ Serwis Pojazdów Kolejowych &nbsp;·&nbsp; v5.0
+  KORCZ Serwis Pojazdów Kolejowych &nbsp;·&nbsp; v6.0
   &nbsp;&nbsp;|&nbsp;&nbsp;
   <span>P3 → Arkusz Przeglądów</span>
   &nbsp;&nbsp;·&nbsp;&nbsp;
